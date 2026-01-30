@@ -44,9 +44,7 @@ nome_novo_cadastro = ""
 buffer_fotos_novas = []
 
 
-# ==========================================================
-# 🎥 VÍDEO STREAM (ORIGINAL DO 03_RECONHECER)
-# ==========================================================
+# 🎥 VÍDEO STREAM
 class VideoStream:
     def __init__(self, src):
         self.src = src
@@ -98,9 +96,7 @@ class VideoStream:
         self.rodando = False
 
 
-# ==========================================================
-# 🧠 FUNÇÕES DE DADOS (ORIGINAL DO 02_TREINAR)
-# ==========================================================
+#  FUNÇÕES DE DADOS
 def carregar_dados():
     global lista_encodings, lista_nomes
     try:
@@ -150,9 +146,7 @@ def treinar_novas_fotos(nome, lista_fotos):
     print("[TREINO] Concluído e Salvo!")
 
 
-# ==========================================================
-# 🎨 INTERFACE & CLIQUES
-# ==========================================================
+# INTERFACE & CLIQUES
 def desenhar_interface(frame):
     # Barra Inferior Azul
     cv2.rectangle(
@@ -176,7 +170,6 @@ def desenhar_interface(frame):
         2,
     )
 
-    # Botão Remoto
     cv2.rectangle(
         frame, (350, ALTURA_TELA - 80), (600, ALTURA_TELA - 20), COR_BTN_FUNDO, -1
     )
@@ -213,9 +206,7 @@ def gerenciar_cliques(event, x, y, flags, param):
             estado_atual = MODO_RECONHECIMENTO
 
 
-# ==========================================================
-# 🔄 LOOP PRINCIPAL (INTEGRAÇÃO TOTAL)
-# ==========================================================
+#  LOOP PRINCIPAL
 def loop_principal():
     global frame_atual, estado_atual, nome_novo_cadastro, buffer_fotos_novas
 
@@ -233,7 +224,6 @@ def loop_principal():
     ultimo_ia = 0
     ultimo_sucesso = 0
     nome_detectado = ""
-    # Cache de caixas para desenhar o quadrado suavemente entre frames
     caixas_detectadas = []
     nomes_detectados = []
 
@@ -246,23 +236,20 @@ def loop_principal():
 
             frame = cv2.resize(frame_cru, (LARGURA_TELA, ALTURA_TELA))
 
-            # --- LÓGICA DO 03_RECONHECER.PY INTEGRADA ---
             if estado_atual == MODO_RECONHECIMENTO:
                 desenhar_interface(frame)
 
                 agora = time.time()
 
-                # Só processa IA se passou o intervalo (economiza CPU)
                 if (agora - ultimo_ia) > INTERVALO_SCAN_IA:
                     ultimo_ia = agora
 
-                    # Reduz imagem (Lógica original)
                     small = cv2.resize(frame, (0, 0), fx=0.25, fy=0.25)
                     rgb = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
 
                     # Detecta
                     locs = face_recognition.face_locations(rgb)
-                    caixas_detectadas = locs  # Atualiza cache
+                    caixas_detectadas = locs
                     nomes_detectados = []
 
                     if locs:
@@ -282,8 +269,6 @@ def loop_principal():
                             nomes_detectados.append(name)
                     else:
                         nomes_detectados = []
-
-                # --- DESENHO VISUAL (O INCREMENTO DA INTERFACE) ---
 
                 # 1. Desenha quadrados nos rostos (Usando o cache)
                 # Como reduzimos 0.25x (1/4), multiplicamos por 4 pra desenhar certo
@@ -310,7 +295,6 @@ def loop_principal():
                         1,
                     )
 
-                # 2. Barra Superior de Sucesso (Original do 03_reconhecer)
                 if (agora - ultimo_sucesso) < DELAY_RECONHECIMENTO:
                     tempo_restante = int(
                         DELAY_RECONHECIMENTO - (agora - ultimo_sucesso)
@@ -338,7 +322,6 @@ def loop_principal():
                         2,
                     )
 
-            # --- MODO CAPTURA (LÓGICA DO 01_CAPTURAR + INTERFACE) ---
             elif estado_atual == MODO_CAPTURANDO:
                 cv2.rectangle(frame, (0, 0), (LARGURA_TELA, 120), (200, 100, 0), -1)
 
@@ -364,7 +347,6 @@ def loop_principal():
                     2,
                 )
 
-            # --- MODO REMOTO ---
             elif estado_atual == MODO_INFO_REMOTO:
                 cv2.rectangle(
                     frame,
@@ -398,7 +380,6 @@ def loop_principal():
                     COR_TEXTO,
                     2,
                 )
-                # Tenta pegar IP real se possivel, senao mostra o fixo
                 cv2.putText(
                     frame,
                     "http://192.168.18.149:5000",
@@ -441,9 +422,7 @@ def loop_principal():
     cv2.destroyAllWindows()
 
 
-# ==========================================================
-# 🌐 API FLASK (ORIGINAL DO CADASTRAR_REMOTO)
-# ==========================================================
+# API FLASK
 @app.route("/api/cadastrar_direto", methods=["POST"])
 def cadastrar_direto():
     global lista_encodings, lista_nomes
