@@ -8,14 +8,12 @@ import requests
 import os
 from flask import Flask, Response, jsonify, request
 
-# ==========================================================
-# ⚙️ CONFIGURAÇÕES (MANTENDO AS ORIGINAIS)
-# ==========================================================
+# CONFIGURAÇÕES
 ARQUIVO_DADOS = "encodings.pickle"
-URL_CAMERA = "http://192.168.18.159/stream"  # IP DA SUA CÂMERA
+URL_CAMERA = "http://192.168.18.159/stream"
 PASTA_DATASET = "dataset"
-INTERVALO_SCAN_IA = 1.0  # Otimização do 03_reconhecer.py
-DELAY_RECONHECIMENTO = 5.0  # Tempo que a mensagem verde fica na tela
+INTERVALO_SCAN_IA = 1.0
+DELAY_RECONHECIMENTO = 5.0
 
 # Configurações de Tela (LCD 7")
 LARGURA_TELA = 1024
