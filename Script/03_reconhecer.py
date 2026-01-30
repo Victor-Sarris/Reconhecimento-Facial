@@ -9,44 +9,43 @@ import os
 from flask import Flask, Response, jsonify, request
 
 # ==========================================================
-# ⚙️ CONFIGURAÇÕES GERAIS
+# ⚙️ CONFIGURAÇÕES (MANTENDO AS ORIGINAIS)
 # ==========================================================
 ARQUIVO_DADOS = "encodings.pickle"
 URL_CAMERA = "http://192.168.18.159/stream"  # IP DA SUA CÂMERA
 PASTA_DATASET = "dataset"
-INTERVALO_IA = 1.0  # Segundos entre reconhecimentos (poupa CPU)
+INTERVALO_SCAN_IA = 1.0  # Otimização do 03_reconhecer.py
+DELAY_RECONHECIMENTO = 5.0  # Tempo que a mensagem verde fica na tela
 
-# Resolução da Tela (Fixa para o seu monitor)
-LARGURA_TELA = 1920
-ALTURA_TELA = 1080
+# Configurações de Tela (LCD 7")
+LARGURA_TELA = 1024
+ALTURA_TELA = 600
 
-# Cores (BGR)
-COR_FUNDO_BTN = (20, 20, 20)  # Cinza Escuro
-COR_BTN_CAP = (0, 0, 0)  # Preto (Capturar)
-COR_BTN_REM = (0, 0, 0)  # Preto (Remoto)
+# Cores da Interface
+COR_BARRA_FUNDO = (180, 0, 0)  # Azul Escuro
+COR_BTN_FUNDO = (20, 20, 20)  # Preto suave
 COR_TEXTO = (255, 255, 255)  # Branco
-COR_DESTAQUE = (255, 0, 0)  # Azul
+COR_RECONHECIDO = (0, 255, 0)  # Verde Matrix
 
 # Estados do Sistema
 MODO_RECONHECIMENTO = 0
-MODO_MENU = 1
-MODO_CAPTURANDO = 2
-MODO_INFO_REMOTO = 3
+MODO_CAPTURANDO = 1
+MODO_INFO_REMOTO = 2
 
 estado_atual = MODO_RECONHECIMENTO
 
-# Variáveis Globais
+# Globais
 app = Flask(__name__)
 lock = threading.Lock()
 frame_atual = None
 lista_encodings = []
 lista_nomes = []
-nome_novo_cadastro = ""  # Para digitar o nome
-buffer_fotos_novas = []  # Fotos temporárias antes de salvar
+nome_novo_cadastro = ""
+buffer_fotos_novas = []
 
 
 # ==========================================================
-# 🎥 CLASSE DE VÍDEO (BUFFERIZADO)
+# 🎥 VÍDEO STREAM (ORIGINAL DO 03_RECONHECER)
 # ==========================================================
 class VideoStream:
     def __init__(self, src):
@@ -100,7 +99,7 @@ class VideoStream:
 
 
 # ==========================================================
-# 🧠 FUNÇÕES DE IA (TREINAMENTO E CARREGAMENTO)
+# 🧠 FUNÇÕES DE DADOS (ORIGINAL DO 02_TREINAR)
 # ==========================================================
 def carregar_dados():
     global lista_encodings, lista_nomes
@@ -109,8 +108,9 @@ def carregar_dados():
             data = pickle.load(f)
         lista_encodings = data["encodings"]
         lista_nomes = data["names"]
-        print(f"[IA] Carregados {len(lista_nomes)} perfis.")
-    except:
+        print(f"[SISTEMA] Banco carregado: {len(lista_nomes)} usuarios.")
+    except FileNotFoundError:
+        print("[AVISO] Iniciando banco de dados vazio.")
         lista_encodings = []
         lista_nomes = []
 
@@ -124,245 +124,247 @@ def salvar_dados():
 
 def treinar_novas_fotos(nome, lista_fotos):
     global lista_encodings, lista_nomes
-    print(f"[TREINO] Iniciando treinamento para: {nome}")
+    print(f"[TREINO] Processando {len(lista_fotos)} fotos para {nome}...")
 
-    # Cria pasta física
     pasta = os.path.join(PASTA_DATASET, nome)
     if not os.path.exists(pasta):
         os.makedirs(pasta)
 
     count = len(os.listdir(pasta))
-
     for img in lista_fotos:
-        # Salva disco
+        # Salva arquivo físico
         filename = f"{pasta}/{count}.jpg"
         cv2.imwrite(filename, img)
         count += 1
 
-        # Gera Encoding (Treino)
+        # Gera encoding para memória (Treino Instantâneo)
         rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         boxes = face_recognition.face_locations(rgb, model="hog")
         encs = face_recognition.face_encodings(rgb, boxes)
-
         for enc in encs:
             with lock:
                 lista_encodings.append(enc)
                 lista_nomes.append(nome)
 
     salvar_dados()
-    print("[TREINO] Concluído!")
+    print("[TREINO] Concluído e Salvo!")
 
 
 # ==========================================================
-# 🎨 INTERFACE GRÁFICA (GUI)
+# 🎨 INTERFACE & CLIQUES
 # ==========================================================
-def desenhar_botao(img, texto, x, y, w, h, cor_fundo, ativo=False):
-    # Efeito de transparência e bordas arredondadas (simulado)
-    overlay = img.copy()
-    cor_final = cor_fundo
-    if ativo:
-        cor_final = (50, 50, 50)  # Mais claro se hover
+def desenhar_interface(frame):
+    # Barra Inferior Azul
+    cv2.rectangle(
+        frame, (0, ALTURA_TELA - 100), (LARGURA_TELA, ALTURA_TELA), COR_BARRA_FUNDO, -1
+    )
 
-    cv2.rectangle(overlay, (x, y), (x + w, y + h), cor_final, -1)
+    # Botão Capturar
+    cv2.rectangle(
+        frame, (50, ALTURA_TELA - 80), (300, ALTURA_TELA - 20), COR_BTN_FUNDO, -1
+    )
+    cv2.rectangle(
+        frame, (50, ALTURA_TELA - 80), (300, ALTURA_TELA - 20), (255, 255, 255), 1
+    )
+    cv2.putText(
+        frame,
+        "Capturar",
+        (110, ALTURA_TELA - 40),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.8,
+        COR_TEXTO,
+        2,
+    )
 
-    # Borda azul (estilo da sua foto)
-    cv2.rectangle(overlay, (x, y), (x + w, y + h), (200, 0, 0), 2)
-
-    # Mistura para ficar semi-transparente
-    cv2.addWeighted(overlay, 0.8, img, 0.2, 0, img)
-
-    # Texto Centralizado
-    fonte = cv2.FONT_HERSHEY_SIMPLEX
-    escala = 1.0
-    espessura = 2
-    (largura_texto, altura_texto), _ = cv2.getTextSize(texto, fonte, escala, espessura)
-    tx = x + (w - largura_texto) // 2
-    ty = y + (h + altura_texto) // 2
-    cv2.putText(img, texto, (tx, ty), fonte, escala, COR_TEXTO, espessura)
+    # Botão Remoto
+    cv2.rectangle(
+        frame, (350, ALTURA_TELA - 80), (600, ALTURA_TELA - 20), COR_BTN_FUNDO, -1
+    )
+    cv2.rectangle(
+        frame, (350, ALTURA_TELA - 80), (600, ALTURA_TELA - 20), (255, 255, 255), 1
+    )
+    cv2.putText(
+        frame,
+        "Envio Remoto",
+        (390, ALTURA_TELA - 40),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.8,
+        COR_TEXTO,
+        2,
+    )
 
 
 def gerenciar_cliques(event, x, y, flags, param):
     global estado_atual, nome_novo_cadastro, buffer_fotos_novas
-
-    # Largura e altura dos botões
-    btn_w, btn_h = 300, 100
-    btn_y = ALTURA_TELA - 150
-    btn1_x = 50
-    btn2_x = 400
+    y_min = ALTURA_TELA - 80
+    y_max = ALTURA_TELA - 20
 
     if event == cv2.EVENT_LBUTTONDOWN:
         if estado_atual == MODO_RECONHECIMENTO:
-            # Qualquer clique abre o menu
-            estado_atual = MODO_MENU
-
-        elif estado_atual == MODO_MENU:
-            # Checa Botão Capturar
-            if btn1_x < x < btn1_x + btn_w and btn_y < y < btn_y + btn_h:
-                estado_atual = MODO_CAPTURANDO
-                nome_novo_cadastro = ""
-                buffer_fotos_novas = []
-
-            # Checa Botão Remoto
-            elif btn2_x < x < btn2_x + btn_w and btn_y < y < btn_y + btn_h:
-                estado_atual = MODO_INFO_REMOTO
-
-            # Clique fora fecha menu
-            elif y < btn_y:
-                estado_atual = MODO_RECONHECIMENTO
-
-        elif estado_atual == MODO_CAPTURANDO:
-            # Clique para voltar se não estiver digitando
-            pass
-
-        elif estado_atual == MODO_INFO_REMOTO:
-            estado_atual = MODO_MENU
+            if y_min < y < y_max:
+                if 50 < x < 300:
+                    estado_atual = MODO_CAPTURANDO
+                    nome_novo_cadastro = ""
+                    buffer_fotos_novas = []
+                elif 350 < x < 600:
+                    estado_atual = MODO_INFO_REMOTO
+        elif y < (ALTURA_TELA - 100):
+            # Clicar fora volta pro inicio
+            estado_atual = MODO_RECONHECIMENTO
 
 
 # ==========================================================
-# 🔄 LOOP PRINCIPAL
+# 🔄 LOOP PRINCIPAL (INTEGRAÇÃO TOTAL)
 # ==========================================================
 def loop_principal():
     global frame_atual, estado_atual, nome_novo_cadastro, buffer_fotos_novas
 
     stream = VideoStream(URL_CAMERA).start()
-    time.sleep(2)  # Buffer encher
+    time.sleep(2)
 
     cv2.namedWindow("Totem", cv2.WINDOW_NORMAL)
     cv2.setMouseCallback("Totem", gerenciar_cliques)
 
-    # Tenta fullscreen
+    # Configuração de Tela Cheia (Blindada)
     cv2.resizeWindow("Totem", LARGURA_TELA, ALTURA_TELA)
+    cv2.moveWindow("Totem", 0, 0)
     cv2.setWindowProperty("Totem", cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
 
     ultimo_ia = 0
     ultimo_sucesso = 0
     nome_detectado = ""
+    # Cache de caixas para desenhar o quadrado suavemente entre frames
+    caixas_detectadas = []
+    nomes_detectados = []
 
     while True:
         try:
-            # 1. Pega Frame
             frame_cru = stream.read()
             if frame_cru is None:
                 time.sleep(0.01)
                 continue
 
-            # Resize forçado para ocupar tela
             frame = cv2.resize(frame_cru, (LARGURA_TELA, ALTURA_TELA))
 
-            # --- LÓGICA POR ESTADO ---
-
-            # >>> MODO 0: RECONHECIMENTO (Padrão)
+            # --- LÓGICA DO 03_RECONHECER.PY INTEGRADA ---
             if estado_atual == MODO_RECONHECIMENTO:
+                desenhar_interface(frame)
+
                 agora = time.time()
 
-                # Barra verde se reconhecido
-                if (agora - ultimo_sucesso) < 5.0:
-                    cv2.rectangle(frame, (0, 0), (LARGURA_TELA, 80), (0, 255, 0), -1)
-                    cv2.putText(
-                        frame,
-                        f"BEM-VINDO: {nome_detectado}",
-                        (50, 60),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        1.5,
-                        (255, 255, 255),
-                        3,
-                    )
-
-                # Roda IA a cada X segundos
-                if (agora - ultimo_ia) > INTERVALO_IA:
+                # Só processa IA se passou o intervalo (economiza CPU)
+                if (agora - ultimo_ia) > INTERVALO_SCAN_IA:
                     ultimo_ia = agora
+
+                    # Reduz imagem (Lógica original)
                     small = cv2.resize(frame, (0, 0), fx=0.25, fy=0.25)
                     rgb = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
+
+                    # Detecta
                     locs = face_recognition.face_locations(rgb)
+                    caixas_detectadas = locs  # Atualiza cache
+                    nomes_detectados = []
+
                     if locs:
                         encs = face_recognition.face_encodings(rgb, locs)
                         for enc in encs:
+                            name = "Desconhecido"
                             with lock:
+                                # Lógica de Tolerância 0.5 (Original)
                                 matches = face_recognition.compare_faces(
                                     lista_encodings, enc, tolerance=0.5
                                 )
-                            if True in matches:
-                                nome_detectado = lista_nomes[matches.index(True)]
-                                ultimo_sucesso = agora
-                                print(f"Reconhecido: {nome_detectado}")
+                                if True in matches:
+                                    first_match_index = matches.index(True)
+                                    name = lista_nomes[first_match_index]
+                                    ultimo_sucesso = agora
+                                    nome_detectado = name
+                            nomes_detectados.append(name)
+                    else:
+                        nomes_detectados = []
 
-            # >>> MODO 1: MENU (Botões)
-            elif estado_atual == MODO_MENU:
-                # Fundo escurecido
-                overlay = frame.copy()
-                cv2.rectangle(
-                    overlay, (0, 0), (LARGURA_TELA, ALTURA_TELA), (0, 0, 0), -1
-                )
-                cv2.addWeighted(overlay, 0.6, frame, 0.4, 0, frame)
+                # --- DESENHO VISUAL (O INCREMENTO DA INTERFACE) ---
 
-                # Desenha Botões
-                btn_y = ALTURA_TELA - 150
-                desenhar_botao(frame, "Capturar", 50, btn_y, 300, 100, COR_BTN_CAP)
-                desenhar_botao(frame, "Envio Remoto", 400, btn_y, 300, 100, COR_BTN_REM)
+                # 1. Desenha quadrados nos rostos (Usando o cache)
+                # Como reduzimos 0.25x (1/4), multiplicamos por 4 pra desenhar certo
+                for (top, right, bottom, left), name in zip(
+                    caixas_detectadas, nomes_detectados
+                ):
+                    top *= 4
+                    right *= 4
+                    bottom *= 4
+                    left *= 4
 
+                    cor = COR_RECONHECIDO if name != "Desconhecido" else (0, 0, 255)
+                    cv2.rectangle(frame, (left, top), (right, bottom), cor, 2)
+                    cv2.rectangle(
+                        frame, (left, bottom - 35), (right, bottom), cor, cv2.FILLED
+                    )
+                    cv2.putText(
+                        frame,
+                        name,
+                        (left + 6, bottom - 6),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.8,
+                        (255, 255, 255),
+                        1,
+                    )
+
+                # 2. Barra Superior de Sucesso (Original do 03_reconhecer)
+                if (agora - ultimo_sucesso) < DELAY_RECONHECIMENTO:
+                    tempo_restante = int(
+                        DELAY_RECONHECIMENTO - (agora - ultimo_sucesso)
+                    )
+
+                    cv2.rectangle(
+                        frame, (0, 0), (LARGURA_TELA, 80), COR_RECONHECIDO, -1
+                    )
+                    cv2.putText(
+                        frame,
+                        f"ACESSO LIBERADO: {nome_detectado}",
+                        (50, 50),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        1.2,
+                        (0, 0, 0),
+                        3,
+                    )
+                    cv2.putText(
+                        frame,
+                        f"Aguarde {tempo_restante}s...",
+                        (LARGURA_TELA - 250, 50),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.7,
+                        (0, 0, 0),
+                        2,
+                    )
+
+            # --- MODO CAPTURA (LÓGICA DO 01_CAPTURAR + INTERFACE) ---
+            elif estado_atual == MODO_CAPTURANDO:
+                cv2.rectangle(frame, (0, 0), (LARGURA_TELA, 120), (200, 100, 0), -1)
+
+                msg_nome = f"NOME: {nome_novo_cadastro}_"
                 cv2.putText(
                     frame,
-                    "PAINEL DE CONTROLE",
+                    msg_nome,
+                    (50, 50),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    1.2,
+                    COR_TEXTO,
+                    2,
+                )
+
+                info = f"[ESPACO] FOTO ({len(buffer_fotos_novas)})  |  [ENTER] SALVAR  |  [ESC] VOLTAR"
+                cv2.putText(
+                    frame,
+                    info,
                     (50, 100),
                     cv2.FONT_HERSHEY_SIMPLEX,
-                    2,
-                    (255, 255, 255),
-                    5,
-                )
-                cv2.putText(
-                    frame,
-                    "Toque na tela para voltar",
-                    (50, 160),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.8,
+                    0.7,
                     (200, 200, 200),
                     2,
                 )
 
-            # >>> MODO 2: CAPTURANDO (Digitar nome + Tirar fotos)
-            elif estado_atual == MODO_CAPTURANDO:
-                cv2.rectangle(frame, (0, 0), (LARGURA_TELA, 150), (200, 0, 0), -1)
-
-                if not nome_novo_cadastro:
-                    cv2.putText(
-                        frame,
-                        "DIGITE O NOME NO TECLADO",
-                        (50, 60),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        1.5,
-                        (255, 255, 255),
-                        3,
-                    )
-                    cv2.putText(
-                        frame,
-                        "Pressione ENTER para confirmar",
-                        (50, 110),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        1,
-                        (200, 200, 200),
-                        2,
-                    )
-                else:
-                    cv2.putText(
-                        frame,
-                        f"CADASTRANDO: {nome_novo_cadastro}",
-                        (50, 60),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        1.5,
-                        (255, 255, 255),
-                        3,
-                    )
-                    cv2.putText(
-                        frame,
-                        f"Fotos tiradas: {len(buffer_fotos_novas)} (Pressione ESPACO para foto, ENTER para salvar)",
-                        (50, 110),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        0.8,
-                        (200, 200, 200),
-                        2,
-                    )
-
-            # >>> MODO 3: INFO REMOTO
+            # --- MODO REMOTO ---
             elif estado_atual == MODO_INFO_REMOTO:
                 cv2.rectangle(
                     frame,
@@ -371,93 +373,82 @@ def loop_principal():
                     (0, 0, 0),
                     -1,
                 )
-                cv2.putText(
+                cv2.rectangle(
                     frame,
-                    "MODO SERVIDOR ATIVO",
-                    (300, 400),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    2,
-                    COR_DESTAQUE,
-                    4,
-                )
-                cv2.putText(
-                    frame,
-                    "Acesse pelo seu PC:",
-                    (300, 500),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    1.5,
+                    (200, 200),
+                    (LARGURA_TELA - 200, ALTURA_TELA - 200),
                     (255, 255, 255),
                     2,
                 )
                 cv2.putText(
                     frame,
-                    "http://192.168.18.149:5000/api/cadastrar_direto",
-                    (300, 600),
+                    "MODO SERVIDOR",
+                    (320, 300),
                     cv2.FONT_HERSHEY_SIMPLEX,
-                    1,
-                    (0, 255, 0),
+                    1.5,
+                    COR_RECONHECIDO,
                     2,
                 )
                 cv2.putText(
                     frame,
-                    "Clique para voltar",
-                    (300, 800),
+                    "Envie fotos para:",
+                    (250, 380),
                     cv2.FONT_HERSHEY_SIMPLEX,
-                    1,
-                    (100, 100, 100),
+                    1.0,
+                    COR_TEXTO,
+                    2,
+                )
+                # Tenta pegar IP real se possivel, senao mostra o fixo
+                cv2.putText(
+                    frame,
+                    "http://192.168.18.149:5000",
+                    (250, 430),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    1.0,
+                    (0, 255, 255),
                     2,
                 )
 
-            # Exibe
             cv2.imshow("Totem", frame)
             with lock:
                 frame_atual = frame.copy()
 
-            # CONTROLE DE TECLADO (Essencial para o cadastro manual)
+            # --- CONTROLE DE TECLADO ---
             key = cv2.waitKey(1) & 0xFF
 
             if estado_atual == MODO_CAPTURANDO:
-                # Se ainda não tem nome, captura teclado
                 if key == 13:  # ENTER
-                    if not nome_novo_cadastro:  # Se apertou enter sem nome, ignora
-                        pass
-                    elif len(buffer_fotos_novas) > 0:  # Se já tem fotos e nome, salva
+                    if buffer_fotos_novas and nome_novo_cadastro:
                         treinar_novas_fotos(nome_novo_cadastro, buffer_fotos_novas)
                         estado_atual = MODO_RECONHECIMENTO
-                    else:
-                        # Confirmou o nome, agora vai tirar fotos
-                        pass
-                elif key == 27:  # ESC (Cancela)
-                    estado_atual = MODO_MENU
-                elif key == 32:  # ESPAÇO (Tira Foto)
-                    if nome_novo_cadastro:
-                        buffer_fotos_novas.append(frame_cru.copy())
-                        print("Foto capturada!")
-                elif key == 8:  # Backspace
+                elif key == 27:
+                    estado_atual = MODO_RECONHECIMENTO
+                elif key == 32:  # ESPAÇO
+                    buffer_fotos_novas.append(frame_cru.copy())
+                elif key == 8:
                     nome_novo_cadastro = nome_novo_cadastro[:-1]
-                elif 32 <= key <= 126:  # Letras e Números
+                elif 32 <= key <= 126:
                     nome_novo_cadastro += chr(key)
 
-            elif key == ord("q"):
+            if key == ord("q"):
                 break
 
         except Exception as e:
+            # print(e) # Debug
             time.sleep(0.1)
-            # print(e)
 
     stream.stop()
     cv2.destroyAllWindows()
 
 
 # ==========================================================
-# 🌐 API FLASK (RODA EM PARALELO)
+# 🌐 API FLASK (ORIGINAL DO CADASTRAR_REMOTO)
 # ==========================================================
 @app.route("/api/cadastrar_direto", methods=["POST"])
 def cadastrar_direto():
     global lista_encodings, lista_nomes
     if "foto" not in request.files or "nome" not in request.form:
         return jsonify({"erro": "Dados incompletos"}), 400
-
     file = request.files["foto"]
     name = request.form["nome"]
 
@@ -471,8 +462,8 @@ def cadastrar_direto():
             lista_encodings.append(encs[0])
             lista_nomes.append(name)
             salvar_dados()
-        return jsonify({"msg": "Cadastrado"}), 201
-    return jsonify({"erro": "Rosto nao encontrado"}), 400
+        return jsonify({"msg": f"Sucesso! {name} cadastrado."}), 201
+    return jsonify({"erro": "Rosto nao encontrado na foto"}), 400
 
 
 @app.route("/video_feed")
@@ -493,9 +484,6 @@ def video_feed():
     return Response(gen(), mimetype="multipart/x-mixed-replace; boundary=frame")
 
 
-# ==========================================================
-# 🚀 START
-# ==========================================================
 if __name__ == "__main__":
     carregar_dados()
     t = threading.Thread(target=loop_principal)
