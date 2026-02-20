@@ -2,15 +2,15 @@ import requests
 import os
 
 url = "http://192.168.18.149:5000/api/cadastrar_direto"
-pasta_imagens = "dataset/Eva"
-nome_cliente = "Eva Barros" 
+pasta_imagens = "dataset/Henrique"
+nome_cliente = "Henrique Carvalho"
 
 if not os.path.exists(pasta_imagens):
     print(f" Erro: A pasta '{pasta_imagens}' não foi encontrada.")
     exit()
 
 arquivos = os.listdir(pasta_imagens)
-fotos_validas = [f for f in arquivos if f.lower().endswith(('.jpg', '.jpeg', '.png'))]
+fotos_validas = [f for f in arquivos if f.lower().endswith((".jpg", ".jpeg", ".png"))]
 total = len(fotos_validas)
 
 print(f"--- Iniciando envio em massa para: {nome_cliente} ---")
@@ -21,22 +21,22 @@ sucessos = 0
 
 for i, arquivo in enumerate(fotos_validas):
     caminho_completo = os.path.join(pasta_imagens, arquivo)
-    
+
     print(f"[{i+1}/{total}] Enviando {arquivo}...", end=" ")
-    
+
     try:
-        with open(caminho_completo, 'rb') as f:
-            files = {'foto': f}
-            data = {'nome': nome_cliente}
-            
+        with open(caminho_completo, "rb") as f:
+            files = {"foto": f}
+            data = {"nome": nome_cliente}
+
             response = requests.post(url, files=files, data=data)
-            
+
         if response.status_code == 201:
             print("Sucesso!")
             sucessos += 1
         else:
             print(f"Falha: {response.json().get('erro')}")
-            
+
     except Exception as e:
         print(f"Erro de conexão: {e}")
 
