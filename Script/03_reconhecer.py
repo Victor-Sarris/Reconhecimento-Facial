@@ -6,33 +6,33 @@ import threading
 import time
 import requests
 import os
+import sqlite3
+from datetime import datetime
 from flask import Flask, Response, jsonify, request
 
-# CONFIGURAÇÕES
+# CONFIGURAÇÕES PRINCIPAIS
 ARQUIVO_DADOS = "encodings.pickle"
+BANCO_DADOS = "totem_banco.db"
+PASTA_LOGS = "logs_imagens"
 URL_CAMERA = "http://192.168.18.159/stream"
 PASTA_DATASET = "dataset"
 INTERVALO_SCAN_IA = 1.0
 DELAY_RECONHECIMENTO = 5.0
 
-# Configurações de Tela (LCD 7")
 LARGURA_TELA = 1024
 ALTURA_TELA = 600
 
-# Cores da Interface
-COR_BARRA_FUNDO = (180, 0, 0)  # Azul Escuro
-COR_BTN_FUNDO = (20, 20, 20)  # Preto suave
-COR_TEXTO = (255, 255, 255)  # Branco
-COR_RECONHECIDO = (0, 255, 0)  # Verde Matrix
+COR_BARRA_FUNDO = (180, 0, 0)
+COR_BTN_FUNDO = (20, 20, 20)
+COR_TEXTO = (255, 255, 255)
+COR_RECONHECIDO = (0, 255, 0)
 
-# Estados do Sistema
 MODO_RECONHECIMENTO = 0
 MODO_CAPTURANDO = 1
 MODO_INFO_REMOTO = 2
 
 estado_atual = MODO_RECONHECIMENTO
 
-# Globais
 app = Flask(__name__)
 lock = threading.Lock()
 frame_atual = None
@@ -42,7 +42,100 @@ nome_novo_cadastro = ""
 buffer_fotos_novas = []
 
 
-# 🎥 VÍDEO STREAM
+# BANCO DE DADOS E AUDITORIA
+def iniciar_banco():
+    os.makedirs(PASTA_LOGS, exist_ok=True)
+    conn = sqlite3.connect(BANCO_DADOS)
+    c = conn.cursor()
+
+    c.execute(
+        """
+        CREATE TABLE IF NOT EXISTS Usuarios (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            nome TEXT UNIQUE,
+            data_cadastro DATETIME,
+            nivel_acesso TEXT
+        )
+    """
+    )
+
+    c.execute(
+        """
+        CREATE TABLE IF NOT EXISTS Logs_Acesso (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            usuario_id INTEGER,
+            data_hora DATETIME,
+            confianca_reconhecimento REAL,
+            foto_momento TEXT,
+            FOREIGN KEY(usuario_id) REFERENCES Usuarios(id)
+        )
+    """
+    )
+    conn.commit()
+    conn.close()
+    print("[BANCO] Banco de Dados Inicializado com Sucesso.")
+
+
+def cadastrar_usuario_db(nome, nivel="Aluno"):
+    # Grava o usuário no banco de dados relacional.
+    conn = sqlite3.connect(BANCO_DADOS)
+    c = conn.cursor()
+    try:
+        c.execute(
+            "INSERT INTO Usuarios (nome, data_cadastro, nivel_acesso) VALUES (?, ?, ?)",
+            (nome, datetime.now(), nivel),
+        )
+        conn.commit()
+        print(f"[BANCO] Usuário '{nome}' registrado no banco.")
+    except sqlite3.IntegrityError:
+        print(f"[BANCO] Usuário '{nome}' já existe no banco.")
+    finally:
+        conn.close()
+
+
+def registrar_acesso_db(nome, confianca, frame_capturado):
+    # Gera o log de acesso e salva a foto do momento exato
+    conn = sqlite3.connect(BANCO_DADOS)
+    c = conn.cursor()
+
+    # Busca o ID do usuário
+    c.execute("SELECT id FROM Usuarios WHERE nome = ?", (nome,))
+    row = c.fetchone()
+
+    if not row:
+        c.execute(
+            "INSERT INTO Usuarios (nome, data_cadastro, nivel_acesso) VALUES (?, ?, ?)",
+            (nome, datetime.now(), "Migrado do Sistema Antigo"),
+        )
+        conn.commit()
+        print(
+            f"[BANCO] Sincronização automática: Usuário antigo '{nome}' adicionado ao novo banco."
+        )
+    else:
+        user_id = row[0]
+
+    agora_dt = datetime.now()
+
+    nome_arquivo = f"{PASTA_LOGS}/{agora_dt.strftime('%Y%m%d_%H%M%S')}_{nome.replace(' ', '_')}.jpg"
+    cv2.imwrite(nome_arquivo, frame_capturado)
+
+    c.execute(
+        """
+        INSERT INTO Logs_Acesso (usuario_id, data_hora, confianca_reconhecimento, foto_momento)
+        VALUES (?, ?, ?, ?)
+    """,
+        (user_id, agora_dt, confianca, nome_arquivo),
+    )
+
+    conn.commit()
+    print(
+        f"[AUDITORIA] Acesso salvo: {nome} | Confiança: {confianca}% | Foto: {nome_arquivo}"
+    )
+
+    conn.close()
+
+
+# VÍDEO STREAM
 class VideoStream:
     def __init__(self, src):
         self.src = src
@@ -94,7 +187,7 @@ class VideoStream:
         self.rodando = False
 
 
-#  FUNÇÕES DE DADOS
+# FUNÇÕES DE DADOS (PICKLE + DB)
 def carregar_dados():
     global lista_encodings, lista_nomes
     try:
@@ -102,9 +195,8 @@ def carregar_dados():
             data = pickle.load(f)
         lista_encodings = data["encodings"]
         lista_nomes = data["names"]
-        print(f"[SISTEMA] Banco carregado: {len(lista_nomes)} usuarios.")
+        print(f"[IA] Carregados {len(lista_nomes)} vetores faciais.")
     except FileNotFoundError:
-        print("[AVISO] Iniciando banco de dados vazio.")
         lista_encodings = []
         lista_nomes = []
 
@@ -118,7 +210,9 @@ def salvar_dados():
 
 def treinar_novas_fotos(nome, lista_fotos):
     global lista_encodings, lista_nomes
-    print(f"[TREINO] Processando {len(lista_fotos)} fotos para {nome}...")
+
+    # Registra no Banco de Dados SQLite
+    cadastrar_usuario_db(nome)
 
     pasta = os.path.join(PASTA_DATASET, nome)
     if not os.path.exists(pasta):
@@ -126,12 +220,10 @@ def treinar_novas_fotos(nome, lista_fotos):
 
     count = len(os.listdir(pasta))
     for img in lista_fotos:
-        # Salva arquivo físico
         filename = f"{pasta}/{count}.jpg"
         cv2.imwrite(filename, img)
         count += 1
 
-        # Gera encoding para memória (Treino Instantâneo)
         rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         boxes = face_recognition.face_locations(rgb, model="hog")
         encs = face_recognition.face_encodings(rgb, boxes)
@@ -141,17 +233,14 @@ def treinar_novas_fotos(nome, lista_fotos):
                 lista_nomes.append(nome)
 
     salvar_dados()
-    print("[TREINO] Concluído e Salvo!")
 
 
 # INTERFACE & CLIQUES
 def desenhar_interface(frame):
-    # Barra Inferior Azul
     cv2.rectangle(
         frame, (0, ALTURA_TELA - 100), (LARGURA_TELA, ALTURA_TELA), COR_BARRA_FUNDO, -1
     )
 
-    # Botão Capturar
     cv2.rectangle(
         frame, (50, ALTURA_TELA - 80), (300, ALTURA_TELA - 20), COR_BTN_FUNDO, -1
     )
@@ -200,11 +289,10 @@ def gerenciar_cliques(event, x, y, flags, param):
                 elif 350 < x < 600:
                     estado_atual = MODO_INFO_REMOTO
         elif y < (ALTURA_TELA - 100):
-            # Clicar fora volta pro inicio
             estado_atual = MODO_RECONHECIMENTO
 
 
-#  LOOP PRINCIPAL
+# LOOP PRINCIPAL
 def loop_principal():
     global frame_atual, estado_atual, nome_novo_cadastro, buffer_fotos_novas
 
@@ -214,7 +302,6 @@ def loop_principal():
     cv2.namedWindow("Totem", cv2.WINDOW_NORMAL)
     cv2.setMouseCallback("Totem", gerenciar_cliques)
 
-    # Configuração de Tela Cheia (Blindada)
     cv2.resizeWindow("Totem", LARGURA_TELA, ALTURA_TELA)
     cv2.moveWindow("Totem", 0, 0)
     cv2.setWindowProperty("Totem", cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
@@ -245,7 +332,6 @@ def loop_principal():
                     small = cv2.resize(frame, (0, 0), fx=0.25, fy=0.25)
                     rgb = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
 
-                    # Detecta
                     locs = face_recognition.face_locations(rgb)
                     caixas_detectadas = locs
                     nomes_detectados = []
@@ -255,21 +341,34 @@ def loop_principal():
                         for enc in encs:
                             name = "Desconhecido"
                             with lock:
-                                # Lógica de Tolerância 0.5 (Original)
-                                matches = face_recognition.compare_faces(
-                                    lista_encodings, enc, tolerance=0.5
+                                face_distances = face_recognition.face_distance(
+                                    lista_encodings, enc
                                 )
-                                if True in matches:
-                                    first_match_index = matches.index(True)
-                                    name = lista_nomes[first_match_index]
-                                    ultimo_sucesso = agora
-                                    nome_detectado = name
+                                if len(face_distances) > 0:
+                                    best_match_index = np.argmin(face_distances)
+                                    distancia_minima = face_distances[best_match_index]
+
+                                    if distancia_minima < 0.5:
+                                        name = lista_nomes[best_match_index]
+
+                                        em_cooldown = (
+                                            agora - ultimo_sucesso
+                                        ) < DELAY_RECONHECIMENTO
+                                        if not em_cooldown:
+                                            confianca_pct = round(
+                                                (1.0 - distancia_minima) * 100, 2
+                                            )
+                                            registrar_acesso_db(
+                                                name, confianca_pct, frame_cru.copy()
+                                            )
+
+                                            ultimo_sucesso = agora
+                                            nome_detectado = name
+
                             nomes_detectados.append(name)
                     else:
                         nomes_detectados = []
 
-                # 1. Desenha quadrados nos rostos (Usando o cache)
-                # Como reduzimos 0.25x (1/4), multiplicamos por 4 pra desenhar certo
                 for (top, right, bottom, left), name in zip(
                     caixas_detectadas, nomes_detectados
                 ):
@@ -277,7 +376,6 @@ def loop_principal():
                     right *= 4
                     bottom *= 4
                     left *= 4
-
                     cor = COR_RECONHECIDO if name != "Desconhecido" else (0, 0, 255)
                     cv2.rectangle(frame, (left, top), (right, bottom), cor, 2)
                     cv2.rectangle(
@@ -297,7 +395,6 @@ def loop_principal():
                     tempo_restante = int(
                         DELAY_RECONHECIMENTO - (agora - ultimo_sucesso)
                     )
-
                     cv2.rectangle(
                         frame, (0, 0), (LARGURA_TELA, 80), COR_RECONHECIDO, -1
                     )
@@ -322,7 +419,6 @@ def loop_principal():
 
             elif estado_atual == MODO_CAPTURANDO:
                 cv2.rectangle(frame, (0, 0), (LARGURA_TELA, 120), (200, 100, 0), -1)
-
                 msg_nome = f"NOME: {nome_novo_cadastro}_"
                 cv2.putText(
                     frame,
@@ -333,7 +429,6 @@ def loop_principal():
                     COR_TEXTO,
                     2,
                 )
-
                 info = f"[ESPACO] FOTO ({len(buffer_fotos_novas)})  |  [ENTER] SALVAR  |  [ESC] VOLTAR"
                 cv2.putText(
                     frame,
@@ -371,7 +466,7 @@ def loop_principal():
                 )
                 cv2.putText(
                     frame,
-                    "Envie fotos para:",
+                    "API de Relatorios disponivel em:",
                     (250, 380),
                     cv2.FONT_HERSHEY_SIMPLEX,
                     1.0,
@@ -380,10 +475,10 @@ def loop_principal():
                 )
                 cv2.putText(
                     frame,
-                    "http://192.168.18.149:5000",
-                    (250, 430),
+                    "http://192.168.18.149:5000/api/relatorio",
+                    (230, 430),
                     cv2.FONT_HERSHEY_SIMPLEX,
-                    1.0,
+                    0.9,
                     (0, 255, 255),
                     2,
                 )
@@ -392,17 +487,15 @@ def loop_principal():
             with lock:
                 frame_atual = frame.copy()
 
-            # --- CONTROLE DE TECLADO ---
             key = cv2.waitKey(1) & 0xFF
-
             if estado_atual == MODO_CAPTURANDO:
-                if key == 13:  # ENTER
+                if key == 13:
                     if buffer_fotos_novas and nome_novo_cadastro:
                         treinar_novas_fotos(nome_novo_cadastro, buffer_fotos_novas)
                         estado_atual = MODO_RECONHECIMENTO
                 elif key == 27:
                     estado_atual = MODO_RECONHECIMENTO
-                elif key == 32:  # ESPAÇO
+                elif key == 32:
                     buffer_fotos_novas.append(frame_cru.copy())
                 elif key == 8:
                     nome_novo_cadastro = nome_novo_cadastro[:-1]
@@ -413,7 +506,6 @@ def loop_principal():
                 break
 
         except Exception as e:
-            # print(e) # Debug
             time.sleep(0.1)
 
     stream.stop()
@@ -436,11 +528,39 @@ def cadastrar_direto():
     if boxes:
         encs = face_recognition.face_encodings(rgb, boxes)
         with lock:
+            cadastrar_usuario_db(name)
             lista_encodings.append(encs[0])
             lista_nomes.append(name)
             salvar_dados()
         return jsonify({"msg": f"Sucesso! {name} cadastrado."}), 201
     return jsonify({"erro": "Rosto nao encontrado na foto"}), 400
+
+
+# a rota /api/relatorio exporta os logs do banco de dados em formato JSON
+@app.route("/api/relatorio", methods=["GET"])
+def relatorio_acessos():
+    conn = sqlite3.connect(BANCO_DADOS)
+    c = conn.cursor()
+    c.execute(
+        """
+        SELECT u.nome, l.data_hora, l.confianca_reconhecimento, l.foto_momento
+        FROM Logs_Acesso l
+        JOIN Usuarios u ON l.usuario_id = u.id
+        ORDER BY l.data_hora DESC LIMIT 100
+    """
+    )
+    logs = []
+    for row in c.fetchall():
+        logs.append(
+            {
+                "usuario": row[0],
+                "data_hora": row[1],
+                "confianca_pct": row[2],
+                "foto_caminho": row[3],
+            }
+        )
+    conn.close()
+    return jsonify({"total_logs": len(logs), "acessos": logs})
 
 
 @app.route("/video_feed")
@@ -462,8 +582,11 @@ def video_feed():
 
 
 if __name__ == "__main__":
+    iniciar_banco()
     carregar_dados()
     t = threading.Thread(target=loop_principal)
     t.daemon = True
     t.start()
-    app.run(host="0.0.0.0", port=5000, debug=False)
+    app.run(
+        host="0.0.0.0", port=5000, debug=False
+    )  # mudar a porta se já tiver uma aplicacao rodando (que é o meu caso)
