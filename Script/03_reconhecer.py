@@ -102,26 +102,35 @@ def registrar_acesso_db(nome, confianca, frame_capturado):
     c.execute("SELECT id FROM Usuarios WHERE nome = ?", (nome,))
     row = c.fetchone()
 
-    if row:
-        user_id = row[0]
-        agora_dt = datetime.now()
-
-        nome_arquivo = f"{PASTA_LOGS}/{agora_dt.strftime('%Y%m%d_%H%M%S')}_{nome.replace(' ', '_')}.jpg"
-        cv2.imwrite(nome_arquivo, frame_capturado)
-
-        # Grava o log
+    if not row:
         c.execute(
-            """
-            INSERT INTO Logs_Acesso (usuario_id, data_hora, confianca_reconhecimento, foto_momento)
-            VALUES (?, ?, ?, ?)
-        """,
-            (user_id, agora_dt, confianca, nome_arquivo),
+            "INSERT INTO Usuarios (nome, data_cadastro, nivel_acesso) VALUES (?, ?, ?)",
+            (nome, datetime.now(), "Migrado do Sistema Antigo"),
         )
-
         conn.commit()
         print(
-            f"[AUDITORIA] Acesso salvo: {nome} | Confiança: {confianca}% | Foto: {nome_arquivo}"
+            f"[BANCO] Sincronização automática: Usuário antigo '{nome}' adicionado ao novo banco."
         )
+    else:
+        user_id = row[0]
+
+    agora_dt = datetime.now()
+
+    nome_arquivo = f"{PASTA_LOGS}/{agora_dt.strftime('%Y%m%d_%H%M%S')}_{nome.replace(' ', '_')}.jpg"
+    cv2.imwrite(nome_arquivo, frame_capturado)
+
+    c.execute(
+        """
+        INSERT INTO Logs_Acesso (usuario_id, data_hora, confianca_reconhecimento, foto_momento)
+        VALUES (?, ?, ?, ?)
+    """,
+        (user_id, agora_dt, confianca, nome_arquivo),
+    )
+
+    conn.commit()
+    print(
+        f"[AUDITORIA] Acesso salvo: {nome} | Confiança: {confianca}% | Foto: {nome_arquivo}"
+    )
 
     conn.close()
 
@@ -578,4 +587,6 @@ if __name__ == "__main__":
     t = threading.Thread(target=loop_principal)
     t.daemon = True
     t.start()
-    app.run(host="0.0.0.0", port=5000, debug=False)
+    app.run(
+        host="0.0.0.0", port=5000, debug=False
+    )  # mudar a porta se já tiver uma aplicacao rodando (que é o meu caso)
