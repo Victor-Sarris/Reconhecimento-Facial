@@ -14,7 +14,7 @@ from flask import Flask, Response, jsonify, request
 ARQUIVO_DADOS = "encodings.pickle"
 BANCO_DADOS = "totem_banco.db"
 PASTA_LOGS = "logs_imagens"
-URL_CAMERA = "http://192.168.18.159/stream"
+URL_CAMERA = "http://192.168.137.217/stream"
 PASTA_DATASET = "dataset"
 INTERVALO_SCAN_IA = 1.0
 DELAY_RECONHECIMENTO = 5.0
@@ -136,17 +136,20 @@ def registrar_acesso_db(nome, confianca, frame_capturado):
 
 
 # VÍDEO STREAM
+# ========================================= CONFIGURACOES DO PC =========================================
 class VideoStream:
-    def __init__(self, src):
+    def __init__(self, src=0):
         self.src = src
-        self.stream = None
-        self.bytes_buffer = bytes()
+        # Inicializa a captura de vídeo do OpenCV.
+        # Se 'src' for 0, ele conecta na webcam padrão do notebook.
+        self.stream = cv2.VideoCapture(self.src)
         self.ultimo_frame = None
         self.rodando = False
-        self.lock = threading.Lock()
+        self.lock = threading.Lock()  # evita conflito entre os threads
 
     def start(self):
         self.rodando = True
+        # Inicia o Thread que vai ficar caputrando imagens em segundo plano
         t = threading.Thread(target=self.update)
         t.daemon = True
         t.start()
@@ -154,39 +157,30 @@ class VideoStream:
 
     def update(self):
         while self.rodando:
-            try:
-                if self.stream is None:
-                    self.stream = requests.get(self.src, stream=True, timeout=5)
-
-                for chunk in self.stream.iter_content(chunk_size=4096):
-                    if not self.rodando:
-                        if self.stream:
-                            self.stream.close()
-                        break
-                    self.bytes_buffer += chunk
-                    a = self.bytes_buffer.find(b"\xff\xd8")
-                    b = self.bytes_buffer.find(b"\xff\xd9")
-                    if a != -1 and b != -1:
-                        jpg = self.bytes_buffer[a : b + 2]
-                        self.bytes_buffer = self.bytes_buffer[b + 2 :]
-                        img = cv2.imdecode(
-                            np.frombuffer(jpg, dtype=np.uint8), cv2.IMREAD_COLOR
-                        )
-                        with self.lock:
-                            self.ultimo_frame = img
-            except:
-                self.stream = None
-                self.bytes_buffer = bytes()
-                time.sleep(2)
+            # O .read() nativo do OpenCV retorna duas variaveis
+            # 1. ret: booleano indicando se a leitura deu certo
+            # 2. frame: a matriz da imagem capturada
+            ret, frame = self.stream.read()
+            if ret:
+                # Se leu com sucesso, atualiza a variavel principal com seguranca
+                with self.lock:
+                    self.ultimo_frame = frame
+            else:  # Se houver falha na leitura, aguarda uma fracao de segundo
+                time.sleep(0.01)
 
     def read(self):
+        # Retorna o frame mais recente quando o loop principal pedir
         with self.lock:
             return self.ultimo_frame
 
     def stop(self):
         self.rodando = False
+        # Fecha a camera quando o loop terminar
+        if self.stream is not None:
+            self.stream.release()
 
 
+# ========================================= FIM CONFIGURACOES DO PC =========================================
 # FUNÇÕES DE DADOS (PICKLE + DB)
 def carregar_dados():
     global lista_encodings, lista_nomes
@@ -296,7 +290,9 @@ def gerenciar_cliques(event, x, y, flags, param):
 def loop_principal():
     global frame_atual, estado_atual, nome_novo_cadastro, buffer_fotos_novas
 
-    stream = VideoStream(URL_CAMERA).start()
+    # stream = VideoStream(URL_CAMERA).start()
+    stream = VideoStream(0).start()
+    # stream = cv2.VideoCapture(0)
     time.sleep(2)
 
     cv2.namedWindow("Totem", cv2.WINDOW_NORMAL)
