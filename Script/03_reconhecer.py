@@ -7,6 +7,7 @@ import time
 import requests
 import os
 import sqlite3
+import math
 from datetime import datetime
 from flask import Flask, Response, jsonify, request
 
@@ -225,8 +226,9 @@ def treinar_novas_fotos(nome, lista_fotos):
         count += 1
 
         rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        boxes = face_recognition.face_locations(rgb, model="hog")
-        encs = face_recognition.face_encodings(rgb, boxes)
+        rgb_alinhado = alinhar_rosto(rgb)
+        boxes = face_recognition.face_locations(rgb_alinhado, model="hog")
+        encs = face_recognition.face_encodings(rgb_alinhado, boxes)
         for enc in encs:
             with lock:
                 lista_encodings.append(enc)
@@ -292,6 +294,45 @@ def gerenciar_cliques(event, x, y, flags, param):
             estado_atual = MODO_RECONHECIMENTO
 
 
+def alinhar_rosto(imagem_rbg):
+    landmarks_lista = face_recognition.face_landmarks(imagem_rbg)
+
+    # se nao achar nenhum rosto na imagem
+    if not landmarks_lista:
+        return imagem_rbg
+
+    # se achar
+    landmarks = landmarks_lista[0]
+
+    # coordenadas dos olhos
+    olho_esquerdo = landmarks["left_eye"]
+    olho_direito = landmarks["right_eye"]
+
+    # cacula o centro de cada olho
+    centro_esq = np.mean(olho_esquerdo, axis=0).astype(int)
+    centro_dir = np.mean(olho_direito, axis=0).astype(int)
+
+    # calcula o angulo de inclinacao
+    dY = centro_dir[1] - centro_esq[1]
+    dX = centro_dir[0] - centro_esq[0]
+    angulo = np.degrees(math.atan2(dY, dX))
+
+    # calcula o ponto central
+    eixo_rotacao = (
+        int((centro_esq[0] + centro_dir[0]) / 2),
+        int((centro_esq[1] + centro_dir[1]) / 2),
+    )
+
+    # rotaciona a imagem
+    altura, largura = imagem_rbg.shape[:2]
+    matriz_rotacao = cv2.getRotationMatrix2D(eixo_rotacao, angulo, 1.0)
+    imagem_alinhada = cv2.warpAffine(
+        imagem_rbg, matriz_rotacao, (largura, altura), flags=cv2.INTER_CUBIC
+    )
+
+    return imagem_alinhada
+
+
 # LOOP PRINCIPAL
 def loop_principal():
     global frame_atual, estado_atual, nome_novo_cadastro, buffer_fotos_novas
@@ -331,8 +372,9 @@ def loop_principal():
 
                     small = cv2.resize(frame, (0, 0), fx=0.25, fy=0.25)
                     rgb = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
+                    rgb_alinhado = alinhar_rosto(rgb)
 
-                    locs = face_recognition.face_locations(rgb)
+                    locs = face_recognition.face_locations(rgb_alinhado)
                     caixas_detectadas = locs
                     nomes_detectados = []
 
