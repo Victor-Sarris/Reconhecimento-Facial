@@ -8,6 +8,9 @@ import requests
 import os
 import sqlite3
 import math
+import board
+import busio
+import adafruit_vl53l0x
 from datetime import datetime
 from flask import Flask, Response, jsonify, request
 
@@ -41,6 +44,42 @@ lista_encodings = []
 lista_nomes = []
 nome_novo_cadastro = ""
 buffer_fotos_novas = []
+
+# MODULO A LASER (VL53L0X)
+
+DISTANCIA_GATILHO_MM = 800  # 80 centímetros
+pessoa_na_frente = False
+
+
+def thread_sensor_distancia():
+    global pessoa_na_frente
+
+    try:
+        # Inicializa o barramento I2C do Labrador (SCL = pino 5, SDA = pino 3)
+        i2c = busio.I2C(board.SCL, board.SDA)
+        sensor = adafruit_vl53l0x.VL53L0X(i2c)
+        print("[SENSOR] VL53L0X (Laser) Inicializado com sucesso!")
+    except Exception as e:
+        print(f"[ERRO I2C] Falha ao conectar no sensor. Detalhes: {e}")
+        pessoa_na_frente = (
+            True  # Falha segura: deixa a IA rodar direto se o sensor der erro
+        )
+        return
+
+    while True:
+        try:
+            distancia_mm = sensor.range
+
+            # Se a pessoa estiver a menos de 80cm, libera a IA
+            if 20 < distancia_mm < DISTANCIA_GATILHO_MM:
+                pessoa_na_frente = True
+            else:
+                pessoa_na_frente = False
+
+            time.sleep(0.1)  # 10 leituras por segundo
+
+        except Exception as e:
+            time.sleep(0.5)
 
 
 # BANCO DE DADOS E AUDITORIA
@@ -366,71 +405,87 @@ def loop_principal():
                 desenhar_interface(frame)
 
                 agora = time.time()
+                if pessoa_na_frente:
+                    if (agora - ultimo_ia) > INTERVALO_SCAN_IA:
+                        ultimo_ia = agora
 
-                if (agora - ultimo_ia) > INTERVALO_SCAN_IA:
-                    ultimo_ia = agora
+                        small = cv2.resize(frame, (0, 0), fx=0.25, fy=0.25)
+                        rgb = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
+                        rgb_alinhado = alinhar_rosto(rgb)
 
-                    small = cv2.resize(frame, (0, 0), fx=0.25, fy=0.25)
-                    rgb = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
-                    rgb_alinhado = alinhar_rosto(rgb)
-
-                    locs = face_recognition.face_locations(rgb_alinhado)
-                    caixas_detectadas = locs
-                    nomes_detectados = []
-
-                    if locs:
-                        encs = face_recognition.face_encodings(rgb, locs)
-                        for enc in encs:
-                            name = "Desconhecido"
-                            with lock:
-                                face_distances = face_recognition.face_distance(
-                                    lista_encodings, enc
-                                )
-                                if len(face_distances) > 0:
-                                    best_match_index = np.argmin(face_distances)
-                                    distancia_minima = face_distances[best_match_index]
-
-                                    if distancia_minima < 0.5:
-                                        name = lista_nomes[best_match_index]
-
-                                        em_cooldown = (
-                                            agora - ultimo_sucesso
-                                        ) < DELAY_RECONHECIMENTO
-                                        if not em_cooldown:
-                                            confianca_pct = round(
-                                                (1.0 - distancia_minima) * 100, 2
-                                            )
-                                            registrar_acesso_db(
-                                                name, confianca_pct, frame_cru.copy()
-                                            )
-
-                                            ultimo_sucesso = agora
-                                            nome_detectado = name
-
-                            nomes_detectados.append(name)
-                    else:
+                        locs = face_recognition.face_locations(rgb_alinhado)
+                        caixas_detectadas = locs
                         nomes_detectados = []
 
-                for (top, right, bottom, left), name in zip(
-                    caixas_detectadas, nomes_detectados
-                ):
-                    top *= 4
-                    right *= 4
-                    bottom *= 4
-                    left *= 4
-                    cor = COR_RECONHECIDO if name != "Desconhecido" else (0, 0, 255)
-                    cv2.rectangle(frame, (left, top), (right, bottom), cor, 2)
-                    cv2.rectangle(
-                        frame, (left, bottom - 35), (right, bottom), cor, cv2.FILLED
-                    )
+                        if locs:
+                            encs = face_recognition.face_encodings(rgb, locs)
+                            for enc in encs:
+                                name = "Desconhecido"
+                                with lock:
+                                    face_distances = face_recognition.face_distance(
+                                        lista_encodings, enc
+                                    )
+                                    if len(face_distances) > 0:
+                                        best_match_index = np.argmin(face_distances)
+                                        distancia_minima = face_distances[
+                                            best_match_index
+                                        ]
+
+                                        if distancia_minima < 0.5:
+                                            name = lista_nomes[best_match_index]
+
+                                            em_cooldown = (
+                                                agora - ultimo_sucesso
+                                            ) < DELAY_RECONHECIMENTO
+                                            if not em_cooldown:
+                                                confianca_pct = round(
+                                                    (1.0 - distancia_minima) * 100, 2
+                                                )
+                                                registrar_acesso_db(
+                                                    name,
+                                                    confianca_pct,
+                                                    frame_cru.copy(),
+                                                )
+
+                                                ultimo_sucesso = agora
+                                                nome_detectado = name
+
+                                nomes_detectados.append(name)
+                        else:
+                            nomes_detectados = []
+
+                    for (top, right, bottom, left), name in zip(
+                        caixas_detectadas, nomes_detectados
+                    ):
+                        top *= 4
+                        right *= 4
+                        bottom *= 4
+                        left *= 4
+                        cor = COR_RECONHECIDO if name != "Desconhecido" else (0, 0, 255)
+                        cv2.rectangle(frame, (left, top), (right, bottom), cor, 2)
+                        cv2.rectangle(
+                            frame, (left, bottom - 35), (right, bottom), cor, cv2.FILLED
+                        )
+                        cv2.putText(
+                            frame,
+                            name,
+                            (left + 6, bottom - 6),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.8,
+                            (255, 255, 255),
+                            1,
+                        )
+                else:
+                    caixas_detectadas = []
+                    nomes_detectados = []
                     cv2.putText(
                         frame,
-                        name,
-                        (left + 6, bottom - 6),
+                        "Aproxime-se do Totem para liberar acesso",
+                        (150, 50),
                         cv2.FONT_HERSHEY_SIMPLEX,
-                        0.8,
-                        (255, 255, 255),
-                        1,
+                        1.0,
+                        (0, 255, 255),
+                        2,
                     )
 
                 if (agora - ultimo_sucesso) < DELAY_RECONHECIMENTO:
@@ -626,6 +681,9 @@ def video_feed():
 if __name__ == "__main__":
     iniciar_banco()
     carregar_dados()
+    t_sensor = threading.Thread(target=thread_sensor_distancia)
+    t_sensor.daemon = True
+    t_sensor.start()
     t = threading.Thread(target=loop_principal)
     t.daemon = True
     t.start()
