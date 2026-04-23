@@ -58,32 +58,32 @@ def thread_sensor_distancia():
     global pessoa_na_frente
 
     try:
-        # i2c_bus=1 é o barramento padrão do Labrador. (Se der erro, mude para 0)
         sensor = VL53L0X.VL53L0X(i2c_bus=1, i2c_address=0x29)
-
-        # Inicia usando a constante oficial da biblioteca
         sensor.start_ranging(VL53L0X.VL53L0X_BETTER_ACCURACY_MODE)
-        print("[SENSOR] VL53L0X (ST API) Inicializado com sucesso!")
+        print("[SENSOR] VL53L0X Inicializado! Começando as leituras...")
 
     except Exception as e:
-        print(f"[ERRO I2C] Falha ao conectar no sensor. Detalhes: {e}")
+        print(f"[ERRO I2C] Falha ao conectar: {e}")
         pessoa_na_frente = True  # Falha segura
         return
 
     while True:
         try:
-            # A biblioteca retorna a distância pura em milímetros
             distancia_mm = sensor.get_distance()
 
-            # Ignoramos leituras falsas (geralmente ele retorna > 8000 se não bater em nada)
+            # IMPRIME A DISTÂNCIA REAL NO TERMINAL
+            print(f"[LASER] Distância detectada: {distancia_mm} mm")
+
             if 20 < distancia_mm < DISTANCIA_GATILHO_MM:
                 pessoa_na_frente = True
             else:
                 pessoa_na_frente = False
 
-            time.sleep(0.1)
+            time.sleep(0.5)
 
         except Exception as e:
+            # SE ALGO QUEBRAR, ELE VAI GRITAR AQUI
+            print(f"[ERRO NO LOOP] O sensor travou: {e}")
             time.sleep(0.5)
 
 
