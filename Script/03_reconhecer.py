@@ -8,9 +8,7 @@ import requests
 import os
 import sqlite3
 import math
-import board
-import busio
-import adafruit_vl53l0x
+import VL53L0X
 from datetime import datetime
 from flask import Flask, Response, jsonify, request
 
