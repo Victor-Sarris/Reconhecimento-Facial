@@ -60,7 +60,6 @@ def thread_sensor_distancia():
     try:
         # i2c_bus=1 é o barramento padrão do Labrador. (Se der erro, mude para 0)
         sensor = VL53L0X.VL53L0X(i2c_bus=1, i2c_address=0x29)
-        sensor.open()
 
         # Inicia usando a constante oficial da biblioteca
         sensor.start_ranging(VL53L0X.VL53L0X_BETTER_ACCURACY_MODE)
