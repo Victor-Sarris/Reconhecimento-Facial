@@ -8,6 +8,10 @@ import requests
 import os
 import sqlite3
 import math
+import sys
+
+# Avisa o Python para procurar a biblioteca dentro da pasta que clonamos
+sys.path.append("./VL53L0X_rasp_python/python")
 import VL53L0X
 from datetime import datetime
 from flask import Flask, Response, jsonify, request
@@ -53,28 +57,31 @@ def thread_sensor_distancia():
     global pessoa_na_frente
 
     try:
-        # Inicializa o barramento I2C do Labrador (SCL = pino 5, SDA = pino 3)
-        i2c = busio.I2C(board.SCL, board.SDA)
-        sensor = adafruit_vl53l0x.VL53L0X(i2c)
-        print("[SENSOR] VL53L0X (Laser) Inicializado com sucesso!")
+        # i2c_bus=1 é o barramento padrão do Labrador. (Se der erro, mude para 0)
+        sensor = VL53L0X.VL53L0X(i2c_bus=1, i2c_address=0x29)
+        sensor.open()
+
+        # Inicia usando a constante oficial da biblioteca
+        sensor.start_ranging(VL53L0X.VL53L0X_BETTER_ACCURACY_MODE)
+        print("[SENSOR] VL53L0X (ST API) Inicializado com sucesso!")
+
     except Exception as e:
         print(f"[ERRO I2C] Falha ao conectar no sensor. Detalhes: {e}")
-        pessoa_na_frente = (
-            True  # Falha segura: deixa a IA rodar direto se o sensor der erro
-        )
+        pessoa_na_frente = True  # Falha segura
         return
 
     while True:
         try:
-            distancia_mm = sensor.range
+            # A biblioteca retorna a distância pura em milímetros
+            distancia_mm = sensor.get_distance()
 
-            # Se a pessoa estiver a menos de 80cm, libera a IA
+            # Ignoramos leituras falsas (geralmente ele retorna > 8000 se não bater em nada)
             if 20 < distancia_mm < DISTANCIA_GATILHO_MM:
                 pessoa_na_frente = True
             else:
                 pessoa_na_frente = False
 
-            time.sleep(0.1)  # 10 leituras por segundo
+            time.sleep(0.1)
 
         except Exception as e:
             time.sleep(0.5)
