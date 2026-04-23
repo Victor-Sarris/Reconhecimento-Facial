@@ -10,8 +10,9 @@ import sqlite3
 import math
 import sys
 
-# Avisa o Python para procurar a biblioteca dentro da pasta que clonamos
-sys.path.append("./VL53L0X_rasp_python/python")
+sys.path.append(
+    "./VL53L0X_rasp_python/python"
+)  # Avisa o Python para procurar a biblioteca dentro da pasta que clonamos
 import VL53L0X
 from datetime import datetime
 from flask import Flask, Response, jsonify, request
