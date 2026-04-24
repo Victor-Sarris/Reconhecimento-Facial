@@ -58,7 +58,8 @@ def thread_sensor_distancia():
     global pessoa_na_frente
 
     try:
-        sensor = VL53L0X.VL53L0X(i2c_bus=1, i2c_address=0x29)
+        sensor = VL53L0X.VL53L0X(address=0x29)
+
         sensor.start_ranging(VL53L0X.VL53L0X_BETTER_ACCURACY_MODE)
         print("[SENSOR] VL53L0X Inicializado! Começando as leituras...")
 
