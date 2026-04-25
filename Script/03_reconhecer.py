@@ -57,13 +57,10 @@ pessoa_na_frente = False
 def thread_sensor_distancia():
     global pessoa_na_frente
 
-    def iniciar_sensor_seguro():
-        s = VL53L0X.VL53L0X(address=0x29)
-        s.start_ranging(VL53L0X.VL53L0X_BETTER_ACCURACY_MODE)
-        return s
-
     try:
-        sensor = iniciar_sensor_seguro()
+        # Cria o objeto UMA ÚNICA VEZ na memória
+        sensor = VL53L0X.VL53L0X(address=0x29)
+        sensor.start_ranging(VL53L0X.VL53L0X_BETTER_ACCURACY_MODE)
         print("[SENSOR] VL53L0X Inicializado! Começando as leituras...")
     except Exception as e:
         print(f"[ERRO I2C] Falha fatal ao conectar: {e}")
@@ -87,21 +84,28 @@ def thread_sensor_distancia():
                 else:
                     pessoa_na_frente = False
 
-            elif distancia_mm == -1:
+            else:
                 falhas_consecutivas += 1
                 pessoa_na_frente = False
 
             if falhas_consecutivas >= 3:
                 print(
-                    "[AVISO] Barramento I2C travou! O Watchdog está reiniciando o sensor..."
+                    "[AVISO] Barramento I2C travou! O Watchdog está reiniciando o laser..."
                 )
                 try:
                     sensor.stop_ranging()
                 except:
                     pass
-                time.sleep(0.2)
 
-                sensor = iniciar_sensor_seguro()
+                time.sleep(0.5)
+
+                try:
+                    sensor.start_ranging(
+                        VL53L0X.VL53L0X_BETTER_ACCURACY_MODE
+                    )  # Liga de novo
+                except:
+                    pass
+
                 falhas_consecutivas = 0
                 print("[SENSOR] Reinicialização concluída. Voltando ao trabalho!")
 
