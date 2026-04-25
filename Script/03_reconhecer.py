@@ -643,7 +643,7 @@ def loop_principal():
     cv2.destroyAllWindows()
 
 
-# API FLASK
+# API FLASK.
 @app.route("/api/cadastrar_direto", methods=["POST"])
 def cadastrar_direto():
     global lista_encodings, lista_nomes
