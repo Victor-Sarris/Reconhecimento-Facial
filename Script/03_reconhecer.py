@@ -57,34 +57,58 @@ pessoa_na_frente = False
 def thread_sensor_distancia():
     global pessoa_na_frente
 
+    def iniciar_sensor_seguro():
+        s = VL53L0X.VL53L0X(address=0x29)
+        s.start_ranging(VL53L0X.VL53L0X_BETTER_ACCURACY_MODE)
+        return s
+
     try:
-        sensor = VL53L0X.VL53L0X(address=0x29)
-
-        sensor.start_ranging(VL53L0X.VL53L0X_BETTER_ACCURACY_MODE)
+        sensor = iniciar_sensor_seguro()
         print("[SENSOR] VL53L0X Inicializado! Começando as leituras...")
-
     except Exception as e:
-        print(f"[ERRO I2C] Falha ao conectar: {e}")
-        pessoa_na_frente = True  # Falha segura
+        print(f"[ERRO I2C] Falha fatal ao conectar: {e}")
+        pessoa_na_frente = True
         return
+
+    falhas_consecutivas = 0
 
     while True:
         try:
             distancia_mm = sensor.get_distance()
 
-            # IMPRIME A DISTÂNCIA REAL NO TERMINAL
-            print(f"[LASER] Distância detectada: {distancia_mm} mm")
+            if distancia_mm > 0:
+                falhas_consecutivas = 0
 
-            if 20 < distancia_mm < DISTANCIA_GATILHO_MM:
-                pessoa_na_frente = True
-            else:
+                if distancia_mm != 8190:
+                    print(f"[LASER] Pessoa detectada a: {distancia_mm} mm")
+
+                if 20 < distancia_mm < DISTANCIA_GATILHO_MM:
+                    pessoa_na_frente = True
+                else:
+                    pessoa_na_frente = False
+
+            elif distancia_mm == -1:
+                falhas_consecutivas += 1
                 pessoa_na_frente = False
 
-            time.sleep(0.5)
+            if falhas_consecutivas >= 3:
+                print(
+                    "[AVISO] Barramento I2C travou! O Watchdog está reiniciando o sensor..."
+                )
+                try:
+                    sensor.stop_ranging()
+                except:
+                    pass
+                time.sleep(0.2)
+
+                sensor = iniciar_sensor_seguro()
+                falhas_consecutivas = 0
+                print("[SENSOR] Reinicialização concluída. Voltando ao trabalho!")
+
+            time.sleep(0.2)
 
         except Exception as e:
-            # SE ALGO QUEBRAR, ELE VAI GRITAR AQUI
-            print(f"[ERRO NO LOOP] O sensor travou: {e}")
+            print(f"[ERRO NO LOOP] {e}")
             time.sleep(0.5)
 
 
