@@ -58,12 +58,9 @@ def thread_sensor_distancia():
     global pessoa_na_frente
 
     try:
-        # Cria o objeto UMA ÚNICA VEZ na memória
         sensor = VL53L0X.VL53L0X(address=0x29)
         sensor.start_ranging(VL53L0X.VL53L0X_BETTER_ACCURACY_MODE)
-        print("[SENSOR] VL53L0X Inicializado! Começando as leituras...")
-    except Exception as e:
-        print(f"[ERRO I2C] Falha fatal ao conectar: {e}")
+    except Exception:
         pessoa_na_frente = True
         return
 
@@ -73,25 +70,22 @@ def thread_sensor_distancia():
         try:
             distancia_mm = sensor.get_distance()
 
+            # se a leitura for válida e não for erro de hardware
             if distancia_mm > 0:
                 falhas_consecutivas = 0
 
-                if distancia_mm != 8190:
-                    print(f"[LASER] Pessoa detectada a: {distancia_mm} mm")
-
+                # só diz que tem pessoa se a distância for menor que o gatilho.
+                # se for 8191 (infinito), o if falha e pessoa_na_frente vira False naturalmente.
                 if 20 < distancia_mm < DISTANCIA_GATILHO_MM:
                     pessoa_na_frente = True
                 else:
                     pessoa_na_frente = False
-
             else:
                 falhas_consecutivas += 1
                 pessoa_na_frente = False
 
+            # O Watchdog silencioso
             if falhas_consecutivas >= 3:
-                print(
-                    "[AVISO] Barramento I2C travou! O Watchdog está reiniciando o laser..."
-                )
                 try:
                     sensor.stop_ranging()
                 except:
@@ -100,19 +94,15 @@ def thread_sensor_distancia():
                 time.sleep(0.5)
 
                 try:
-                    sensor.start_ranging(
-                        VL53L0X.VL53L0X_BETTER_ACCURACY_MODE
-                    )  # Liga de novo
+                    sensor.start_ranging(VL53L0X.VL53L0X_BETTER_ACCURACY_MODE)
                 except:
                     pass
 
                 falhas_consecutivas = 0
-                print("[SENSOR] Reinicialização concluída. Voltando ao trabalho!")
 
             time.sleep(0.2)
 
-        except Exception as e:
-            print(f"[ERRO NO LOOP] {e}")
+        except Exception:
             time.sleep(0.5)
 
 
