@@ -440,15 +440,24 @@ def loop_principal():
                         ultimo_ia = agora
 
                         small = cv2.resize(frame, (0, 0), fx=0.25, fy=0.25)
-                        rgb = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
-                        rgb_alinhado = alinhar_rosto(rgb)
+                        rgb_small = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
 
-                        locs = face_recognition.face_locations(rgb_alinhado)
-                        caixas_detectadas = locs
+                        locs_small = face_recognition.face_locations(rgb_small)
+                        caixas_detectadas = locs_small
                         nomes_detectados = []
 
-                        if locs:
-                            encs = face_recognition.face_encodings(rgb, locs)
+                        if locs_small:
+                            locs_full = [
+                                (top * 4, right * 4, bottom * 4, left * 4)
+                                for (top, right, bottom, left) in locs_small
+                            ]
+
+                            rgb_full = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+                            encs = face_recognition.face_encodings(
+                                rgb_full, locs_full, num_jitters=2
+                            )
+
                             for enc in encs:
                                 name = "Desconhecido"
                                 with lock:
@@ -663,16 +672,19 @@ def cadastrar_direto():
     rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
     with lock:
-        boxes = face_recognition.face_locations(rgb)
+        rgb_alinhado = alinhar_rosto(rgb)
+        boxes = face_recognition.face_locations(rgb_alinhado)
 
         if boxes:
-            encs = face_recognition.face_encodings(rgb, boxes)
+            encs = face_recognition.face_encodings(rgb_alinhado, boxes, num_jitters=5)
             if len(encs) > 0:
                 cadastrar_usuario_db(name)
                 lista_encodings.append(encs[0])
                 lista_nomes.append(name)
                 salvar_dados()
                 return jsonify({"msg": f"Sucesso! {name} cadastrado."}), 201
+
+    return jsonify({"erro": "Rosto nao encontrado na foto"}), 400
 
     return jsonify({"erro": "Rosto nao encontrado na foto"}), 400
 

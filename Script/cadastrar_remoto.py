@@ -2,8 +2,8 @@ import requests
 import os
 
 url = "http://192.168.18.149:5000/api/cadastrar_direto"
-pasta_imagens = "dataset/AdeandroPereira"
-nome_cliente = "Adeandro Pereira"
+pasta_imagens = "dataset/YasmimSantana"
+nome_cliente = "Yasmim Santana"
 
 if not os.path.exists(pasta_imagens):
     print(f" Erro: A pasta '{pasta_imagens}' não foi encontrada.")
