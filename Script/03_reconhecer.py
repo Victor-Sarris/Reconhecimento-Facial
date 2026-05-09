@@ -122,19 +122,16 @@ def iniciar_banco():
     conn = sqlite3.connect(BANCO_DADOS)
     c = conn.cursor()
 
-    c.execute(
-        """
+    c.execute("""
         CREATE TABLE IF NOT EXISTS Usuarios (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             nome TEXT UNIQUE,
             data_cadastro DATETIME,
             nivel_acesso TEXT
         )
-    """
-    )
+    """)
 
-    c.execute(
-        """
+    c.execute("""
         CREATE TABLE IF NOT EXISTS Logs_Acesso (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             usuario_id INTEGER,
@@ -143,8 +140,7 @@ def iniciar_banco():
             foto_momento TEXT,
             FOREIGN KEY(usuario_id) REFERENCES Usuarios(id)
         )
-    """
-    )
+    """)
     conn.commit()
     conn.close()
     print("[BANCO] Banco de Dados Inicializado com Sucesso.")
@@ -465,7 +461,7 @@ def loop_principal():
                                             best_match_index
                                         ]
 
-                                        if distancia_minima < 0.5:
+                                        if distancia_minima < 0.3:
                                             name = lista_nomes[best_match_index]
 
                                             em_cooldown = (
@@ -649,21 +645,35 @@ def cadastrar_direto():
     global lista_encodings, lista_nomes
     if "foto" not in request.files or "nome" not in request.form:
         return jsonify({"erro": "Dados incompletos"}), 400
+
     file = request.files["foto"]
     name = request.form["nome"]
 
-    img = cv2.imdecode(np.frombuffer(file.read(), np.uint8), cv2.IMREAD_COLOR)
-    rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-    boxes = face_recognition.face_locations(rgb)
+    file_bytes = np.frombuffer(file.read(), np.uint8)
+    img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
 
-    if boxes:
-        encs = face_recognition.face_encodings(rgb, boxes)
-        with lock:
-            cadastrar_usuario_db(name)
-            lista_encodings.append(encs[0])
-            lista_nomes.append(name)
-            salvar_dados()
-        return jsonify({"msg": f"Sucesso! {name} cadastrado."}), 201
+    if img is None:
+        return jsonify({"erro": "Imagem invalida ou corrompida"}), 400
+
+    altura, largura = img.shape[:2]
+    if largura > 800:
+        proporcao = 800.0 / largura
+        img = cv2.resize(img, (800, int(altura * proporcao)))
+
+    rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+
+    with lock:
+        boxes = face_recognition.face_locations(rgb)
+
+        if boxes:
+            encs = face_recognition.face_encodings(rgb, boxes)
+            if len(encs) > 0:
+                cadastrar_usuario_db(name)
+                lista_encodings.append(encs[0])
+                lista_nomes.append(name)
+                salvar_dados()
+                return jsonify({"msg": f"Sucesso! {name} cadastrado."}), 201
+
     return jsonify({"erro": "Rosto nao encontrado na foto"}), 400
 
 
@@ -672,14 +682,12 @@ def cadastrar_direto():
 def relatorio_acessos():
     conn = sqlite3.connect(BANCO_DADOS)
     c = conn.cursor()
-    c.execute(
-        """
+    c.execute("""
         SELECT u.nome, l.data_hora, l.confianca_reconhecimento, l.foto_momento
         FROM Logs_Acesso l
         JOIN Usuarios u ON l.usuario_id = u.id
         ORDER BY l.data_hora DESC LIMIT 100
-    """
-    )
+    """)
     logs = []
     for row in c.fetchall():
         logs.append(
