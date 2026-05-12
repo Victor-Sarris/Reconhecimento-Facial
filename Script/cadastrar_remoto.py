@@ -2,8 +2,8 @@ import requests
 import os
 
 url = "http://192.168.18.149:5000/api/cadastrar_direto"
-pasta_imagens = "dataset/YasmimSantana"
-nome_cliente = "Yasmim Santana"
+pasta_imagens = "dataset/admin"
+nome_cliente = "admin"
 
 if not os.path.exists(pasta_imagens):
     print(f" Erro: A pasta '{pasta_imagens}' não foi encontrada.")
@@ -13,9 +13,10 @@ arquivos = os.listdir(pasta_imagens)
 fotos_validas = [f for f in arquivos if f.lower().endswith((".jpg", ".jpeg", ".png"))]
 total = len(fotos_validas)
 
-print(f"--- Iniciando envio em massa para: {nome_cliente} ---")
+print(f"--- Iniciando envio em massa para o Labrador/Totem de Reconhecimento---")
 print(f"Pasta: {pasta_imagens}")
 print(f"Total de fotos encontradas: {total}\n")
+print(f"Nome do Paciente: {nome_cliente}\n")
 
 sucessos = 0
 

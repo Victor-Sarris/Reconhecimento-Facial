@@ -185,5 +185,5 @@ void setup() {
 void loop() {
   delay(10000);
 
-  digitalWrite(FLASH_GPIO_NUM, HIGH);
+  // digitalWrite(FLASH_GPIO_NUM, HIGH);
 }
