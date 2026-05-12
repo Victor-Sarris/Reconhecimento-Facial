@@ -295,9 +295,8 @@ def treinar_novas_fotos(nome, lista_fotos):
         count += 1
 
         rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        rgb_alinhado = alinhar_rosto(rgb)
-        boxes = face_recognition.face_locations(rgb_alinhado, model="hog")
-        encs = face_recognition.face_encodings(rgb_alinhado, boxes)
+        boxes = face_recognition.face_locations(rgb, model="hog")
+        encs = face_recognition.face_encodings(rgb, boxes, num_jitters=5)
         for enc in encs:
             with lock:
                 lista_encodings.append(enc)
@@ -470,7 +469,7 @@ def loop_principal():
                                             best_match_index
                                         ]
 
-                                        if distancia_minima < 0.3:
+                                        if distancia_minima < 0.45:
                                             name = lista_nomes[best_match_index]
 
                                             em_cooldown = (
@@ -672,19 +671,16 @@ def cadastrar_direto():
     rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
     with lock:
-        rgb_alinhado = alinhar_rosto(rgb)
-        boxes = face_recognition.face_locations(rgb_alinhado)
+        boxes = face_recognition.face_locations(rgb)
 
         if boxes:
-            encs = face_recognition.face_encodings(rgb_alinhado, boxes, num_jitters=5)
+            encs = face_recognition.face_encodings(rgb, boxes, num_jitters=5)
             if len(encs) > 0:
                 cadastrar_usuario_db(name)
                 lista_encodings.append(encs[0])
                 lista_nomes.append(name)
                 salvar_dados()
                 return jsonify({"msg": f"Sucesso! {name} cadastrado."}), 201
-
-    return jsonify({"erro": "Rosto nao encontrado na foto"}), 400
 
     return jsonify({"erro": "Rosto nao encontrado na foto"}), 400
 
@@ -732,15 +728,22 @@ def video_feed():
     return Response(gen(), mimetype="multipart/x-mixed-replace; boundary=frame")
 
 
+def rodar_servidor():
+    app.run(
+        host="0.0.0.0", port=5000, debug=False, use_reloader=False
+    )  # mudar a porta quase ja tenha um processo nessa
+
+
 if __name__ == "__main__":
     iniciar_banco()
     carregar_dados()
+
     t_sensor = threading.Thread(target=thread_sensor_distancia)
     t_sensor.daemon = True
     t_sensor.start()
-    t = threading.Thread(target=loop_principal)
-    t.daemon = True
-    t.start()
-    app.run(
-        host="0.0.0.0", port=5000, debug=False
-    )  # mudar a porta se já tiver uma aplicacao rodando (que é o meu caso)
+
+    t_flask = threading.Thread(target=rodar_servidor)
+    t_flask.daemon = True
+    t_flask.start()
+
+    loop_principal()
