@@ -116,7 +116,17 @@ def thread_sensor_distancia():
             time.sleep(0.5)
 
 
-# BANCO DE DADOS E AUDITORIA
+# função que lê o sensor térmico nativo do processador do Labrador
+def ler_temperatura():
+    try:
+        with open("/sys/class/thermal/thermal_zone0/temp", "r") as f:
+            temp = float(f.read()) / 1000.0
+        return round(temp, 1)
+    except:
+        return 0.0
+
+
+# CRIAÇÃO DO BANCO DE DADOS
 def iniciar_banco():
     os.makedirs(PASTA_LOGS, exist_ok=True)
     conn = sqlite3.connect(BANCO_DADOS)
@@ -141,6 +151,18 @@ def iniciar_banco():
             FOREIGN KEY(usuario_id) REFERENCES Usuarios(id)
         )
     """)
+
+    try:
+        c.execute(
+            "ALTER TABLE Logs_Acesso ADD COLUMN status_acesso TEXT DEFAULT 'LIBERADO'"
+        )
+        c.execute(
+            "ALTER TABLE Logs_Acesso ADD COLUMN tempo_inferencia_ms INTEGER DEFAULT 0"
+        )
+        c.execute("ALTER TABLE Logs_Acesso ADD COLUMN hardware_temp_c REAL DEFAULT 0.0")
+    except sqlite3.OperationalError:
+        pass
+
     conn.commit()
     conn.close()
     print("[BANCO] Banco de Dados Inicializado com Sucesso.")
@@ -163,12 +185,11 @@ def cadastrar_usuario_db(nome, nivel="Aluno"):
         conn.close()
 
 
-def registrar_acesso_db(nome, confianca, frame_capturado):
-    # Gera o log de acesso e salva a foto do momento exato
+# Funcao para registro de logs de acesso
+def registrar_acesso_db(nome, confianca, frame_capturado, tempo_ms, temp_c):
     conn = sqlite3.connect(BANCO_DADOS)
     c = conn.cursor()
 
-    # Busca o ID do usuário
     c.execute("SELECT id FROM Usuarios WHERE nome = ?", (nome,))
     row = c.fetchone()
 
@@ -178,30 +199,26 @@ def registrar_acesso_db(nome, confianca, frame_capturado):
             (nome, datetime.now(), "Migrado do Sistema Antigo"),
         )
         conn.commit()
-        print(
-            f"[BANCO] Sincronização automática: Usuário antigo '{nome}' adicionado ao novo banco."
-        )
+        user_id = c.lastrowid
     else:
         user_id = row[0]
 
     agora_dt = datetime.now()
-
     nome_arquivo = f"{PASTA_LOGS}/{agora_dt.strftime('%Y%m%d_%H%M%S')}_{nome.replace(' ', '_')}.jpg"
     cv2.imwrite(nome_arquivo, frame_capturado)
 
     c.execute(
         """
-        INSERT INTO Logs_Acesso (usuario_id, data_hora, confianca_reconhecimento, foto_momento)
-        VALUES (?, ?, ?, ?)
+        INSERT INTO Logs_Acesso (usuario_id, data_hora, confianca_reconhecimento, foto_momento, status_acesso, tempo_inferencia_ms, hardware_temp_c)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
     """,
-        (user_id, agora_dt, confianca, nome_arquivo),
+        (user_id, agora_dt, confianca, nome_arquivo, "LIBERADO", tempo_ms, temp_c),
     )
 
     conn.commit()
     print(
-        f"[AUDITORIA] Acesso salvo: {nome} | Confiança: {confianca}% | Foto: {nome_arquivo}"
+        f"[AUDITORIA] Acesso salvo: {nome} | Confiança: {confianca}% | Tempo: {tempo_ms}ms | Temp: {temp_c}°C"
     )
-
     conn.close()
 
 
@@ -438,6 +455,8 @@ def loop_principal():
                     if (agora - ultimo_ia) > INTERVALO_SCAN_IA:
                         ultimo_ia = agora
 
+                        inicio_inferencia = time.time()
+
                         small = cv2.resize(frame, (0, 0), fx=0.25, fy=0.25)
                         rgb_small = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
 
@@ -476,13 +495,22 @@ def loop_principal():
                                                 agora - ultimo_sucesso
                                             ) < DELAY_RECONHECIMENTO
                                             if not em_cooldown:
+                                                tempo_inferencia_ms = int(
+                                                    (time.time() - inicio_inferencia)
+                                                    * 1000
+                                                )
+                                                temp_atual = ler_temperatura()
+
                                                 confianca_pct = round(
                                                     (1.0 - distancia_minima) * 100, 2
                                                 )
+
                                                 registrar_acesso_db(
                                                     name,
                                                     confianca_pct,
                                                     frame_cru.copy(),
+                                                    tempo_inferencia_ms,
+                                                    temp_atual,
                                                 )
 
                                                 ultimo_sucesso = agora
@@ -691,7 +719,8 @@ def relatorio_acessos():
     conn = sqlite3.connect(BANCO_DADOS)
     c = conn.cursor()
     c.execute("""
-        SELECT u.nome, l.data_hora, l.confianca_reconhecimento, l.foto_momento
+        SELECT u.nome, l.data_hora, l.confianca_reconhecimento, l.foto_momento,
+               l.status_acesso, l.tempo_inferencia_ms, l.hardware_temp_c
         FROM Logs_Acesso l
         JOIN Usuarios u ON l.usuario_id = u.id
         ORDER BY l.data_hora DESC LIMIT 100
@@ -703,11 +732,14 @@ def relatorio_acessos():
                 "usuario": row[0],
                 "data_hora": row[1],
                 "confianca_pct": row[2],
+                "status_acesso": row[4] if row[4] else "LIBERADO",
+                "tempo_inferencia_ms": row[5] if row[5] else 0,
+                "hardware_temp_c": row[6] if row[6] else 0.0,
                 "foto_caminho": row[3],
             }
         )
     conn.close()
-    return jsonify({"total_logs": len(logs), "acessos": logs})
+    return jsonify(logs)
 
 
 @app.route("/video_feed")
