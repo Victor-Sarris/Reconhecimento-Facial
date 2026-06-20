@@ -7,6 +7,10 @@ import time
 import requests
 import os
 import sqlite3
+import math
+import sys
+
+
 from datetime import datetime
 from flask import Flask, Response, jsonify, request
 
@@ -14,7 +18,7 @@ from flask import Flask, Response, jsonify, request
 ARQUIVO_DADOS = "encodings.pickle"
 BANCO_DADOS = "totem_banco.db"
 PASTA_LOGS = "logs_imagens"
-URL_CAMERA = "http://192.168.137.217/stream"
+URL_CAMERA = "http://192.168.18.159/stream"
 PASTA_DATASET = "dataset"
 INTERVALO_SCAN_IA = 1.0
 DELAY_RECONHECIMENTO = 5.0
@@ -41,26 +45,38 @@ lista_nomes = []
 nome_novo_cadastro = ""
 buffer_fotos_novas = []
 
+# MODULO A LASER (VL53L0X)
 
-# BANCO DE DADOS E AUDITORIA
+DISTANCIA_GATILHO_MM = 800  # 80 centímetros
+pessoa_na_frente = True
+
+
+# função que lê o sensor térmico nativo do processador do Labrador
+def ler_temperatura():
+    try:
+        with open("/sys/class/thermal/thermal_zone0/temp", "r") as f:
+            temp = float(f.read()) / 1000.0
+        return round(temp, 1)
+    except:
+        return 0.0
+
+
+# CRIAÇÃO DO BANCO DE DADOS
 def iniciar_banco():
     os.makedirs(PASTA_LOGS, exist_ok=True)
     conn = sqlite3.connect(BANCO_DADOS)
     c = conn.cursor()
 
-    c.execute(
-        """
+    c.execute("""
         CREATE TABLE IF NOT EXISTS Usuarios (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             nome TEXT UNIQUE,
             data_cadastro DATETIME,
             nivel_acesso TEXT
         )
-    """
-    )
+    """)
 
-    c.execute(
-        """
+    c.execute("""
         CREATE TABLE IF NOT EXISTS Logs_Acesso (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             usuario_id INTEGER,
@@ -69,8 +85,19 @@ def iniciar_banco():
             foto_momento TEXT,
             FOREIGN KEY(usuario_id) REFERENCES Usuarios(id)
         )
-    """
-    )
+    """)
+
+    try:
+        c.execute(
+            "ALTER TABLE Logs_Acesso ADD COLUMN status_acesso TEXT DEFAULT 'LIBERADO'"
+        )
+        c.execute(
+            "ALTER TABLE Logs_Acesso ADD COLUMN tempo_inferencia_ms INTEGER DEFAULT 0"
+        )
+        c.execute("ALTER TABLE Logs_Acesso ADD COLUMN hardware_temp_c REAL DEFAULT 0.0")
+    except sqlite3.OperationalError:
+        pass
+
     conn.commit()
     conn.close()
     print("[BANCO] Banco de Dados Inicializado com Sucesso.")
@@ -93,12 +120,11 @@ def cadastrar_usuario_db(nome, nivel="Aluno"):
         conn.close()
 
 
-def registrar_acesso_db(nome, confianca, frame_capturado):
-    # Gera o log de acesso e salva a foto do momento exato
+# Funcao para registro de logs de acesso
+def registrar_acesso_db(nome, confianca, frame_capturado, tempo_ms, temp_c):
     conn = sqlite3.connect(BANCO_DADOS)
     c = conn.cursor()
 
-    # Busca o ID do usuário
     c.execute("SELECT id FROM Usuarios WHERE nome = ?", (nome,))
     row = c.fetchone()
 
@@ -108,48 +134,41 @@ def registrar_acesso_db(nome, confianca, frame_capturado):
             (nome, datetime.now(), "Migrado do Sistema Antigo"),
         )
         conn.commit()
-        print(
-            f"[BANCO] Sincronização automática: Usuário antigo '{nome}' adicionado ao novo banco."
-        )
+        user_id = c.lastrowid
     else:
         user_id = row[0]
 
     agora_dt = datetime.now()
-
     nome_arquivo = f"{PASTA_LOGS}/{agora_dt.strftime('%Y%m%d_%H%M%S')}_{nome.replace(' ', '_')}.jpg"
     cv2.imwrite(nome_arquivo, frame_capturado)
 
     c.execute(
         """
-        INSERT INTO Logs_Acesso (usuario_id, data_hora, confianca_reconhecimento, foto_momento)
-        VALUES (?, ?, ?, ?)
+        INSERT INTO Logs_Acesso (usuario_id, data_hora, confianca_reconhecimento, foto_momento, status_acesso, tempo_inferencia_ms, hardware_temp_c)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
     """,
-        (user_id, agora_dt, confianca, nome_arquivo),
+        (user_id, agora_dt, confianca, nome_arquivo, "LIBERADO", tempo_ms, temp_c),
     )
 
     conn.commit()
     print(
-        f"[AUDITORIA] Acesso salvo: {nome} | Confiança: {confianca}% | Foto: {nome_arquivo}"
+        f"[AUDITORIA] Acesso salvo: {nome} | Confiança: {confianca}% | Tempo: {tempo_ms}ms | Temp: {temp_c}°C"
     )
-
     conn.close()
 
 
 # VÍDEO STREAM
-# ========================================= CONFIGURACOES DO PC =========================================
 class VideoStream:
-    def __init__(self, src=0):
+    def __init__(self, src):
         self.src = src
-        # Inicializa a captura de vídeo do OpenCV.
-        # Se 'src' for 0, ele conecta na webcam padrão do notebook.
-        self.stream = cv2.VideoCapture(self.src)
+        self.stream = None
+        self.bytes_buffer = bytes()
         self.ultimo_frame = None
         self.rodando = False
-        self.lock = threading.Lock()  # evita conflito entre os threads
+        self.lock = threading.Lock()
 
     def start(self):
         self.rodando = True
-        # Inicia o Thread que vai ficar caputrando imagens em segundo plano
         t = threading.Thread(target=self.update)
         t.daemon = True
         t.start()
@@ -157,30 +176,39 @@ class VideoStream:
 
     def update(self):
         while self.rodando:
-            # O .read() nativo do OpenCV retorna duas variaveis
-            # 1. ret: booleano indicando se a leitura deu certo
-            # 2. frame: a matriz da imagem capturada
-            ret, frame = self.stream.read()
-            if ret:
-                # Se leu com sucesso, atualiza a variavel principal com seguranca
-                with self.lock:
-                    self.ultimo_frame = frame
-            else:  # Se houver falha na leitura, aguarda uma fracao de segundo
-                time.sleep(0.01)
+            try:
+                if self.stream is None:
+                    self.stream = requests.get(self.src, stream=True, timeout=5)
+
+                for chunk in self.stream.iter_content(chunk_size=4096):
+                    if not self.rodando:
+                        if self.stream:
+                            self.stream.close()
+                        break
+                    self.bytes_buffer += chunk
+                    a = self.bytes_buffer.find(b"\xff\xd8")
+                    b = self.bytes_buffer.find(b"\xff\xd9")
+                    if a != -1 and b != -1:
+                        jpg = self.bytes_buffer[a : b + 2]
+                        self.bytes_buffer = self.bytes_buffer[b + 2 :]
+                        img = cv2.imdecode(
+                            np.frombuffer(jpg, dtype=np.uint8), cv2.IMREAD_COLOR
+                        )
+                        with self.lock:
+                            self.ultimo_frame = img
+            except:
+                self.stream = None
+                self.bytes_buffer = bytes()
+                time.sleep(2)
 
     def read(self):
-        # Retorna o frame mais recente quando o loop principal pedir
         with self.lock:
             return self.ultimo_frame
 
     def stop(self):
         self.rodando = False
-        # Fecha a camera quando o loop terminar
-        if self.stream is not None:
-            self.stream.release()
 
 
-# ========================================= FIM CONFIGURACOES DO PC =========================================
 # FUNÇÕES DE DADOS (PICKLE + DB)
 def carregar_dados():
     global lista_encodings, lista_nomes
@@ -220,7 +248,7 @@ def treinar_novas_fotos(nome, lista_fotos):
 
         rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         boxes = face_recognition.face_locations(rgb, model="hog")
-        encs = face_recognition.face_encodings(rgb, boxes)
+        encs = face_recognition.face_encodings(rgb, boxes, num_jitters=5)
         for enc in encs:
             with lock:
                 lista_encodings.append(enc)
@@ -286,13 +314,50 @@ def gerenciar_cliques(event, x, y, flags, param):
             estado_atual = MODO_RECONHECIMENTO
 
 
+def alinhar_rosto(imagem_rbg):
+    landmarks_lista = face_recognition.face_landmarks(imagem_rbg)
+
+    # se nao achar nenhum rosto na imagem
+    if not landmarks_lista:
+        return imagem_rbg
+
+    # se achar
+    landmarks = landmarks_lista[0]
+
+    # coordenadas dos olhos
+    olho_esquerdo = landmarks["left_eye"]
+    olho_direito = landmarks["right_eye"]
+
+    # cacula o centro de cada olho
+    centro_esq = np.mean(olho_esquerdo, axis=0).astype(int)
+    centro_dir = np.mean(olho_direito, axis=0).astype(int)
+
+    # calcula o angulo de inclinacao
+    dY = centro_dir[1] - centro_esq[1]
+    dX = centro_dir[0] - centro_esq[0]
+    angulo = np.degrees(math.atan2(dY, dX))
+
+    # calcula o ponto central
+    eixo_rotacao = (
+        int((centro_esq[0] + centro_dir[0]) / 2),
+        int((centro_esq[1] + centro_dir[1]) / 2),
+    )
+
+    # rotaciona a imagem
+    altura, largura = imagem_rbg.shape[:2]
+    matriz_rotacao = cv2.getRotationMatrix2D(eixo_rotacao, angulo, 1.0)
+    imagem_alinhada = cv2.warpAffine(
+        imagem_rbg, matriz_rotacao, (largura, altura), flags=cv2.INTER_CUBIC
+    )
+
+    return imagem_alinhada
+
+
 # LOOP PRINCIPAL
 def loop_principal():
     global frame_atual, estado_atual, nome_novo_cadastro, buffer_fotos_novas
 
-    # stream = VideoStream(URL_CAMERA).start()
-    stream = VideoStream(0).start()
-    # stream = cv2.VideoCapture(0)
+    stream = VideoStream(URL_CAMERA).start()
     time.sleep(2)
 
     cv2.namedWindow("Totem", cv2.WINDOW_NORMAL)
@@ -321,70 +386,107 @@ def loop_principal():
                 desenhar_interface(frame)
 
                 agora = time.time()
+                if pessoa_na_frente:
+                    if (agora - ultimo_ia) > INTERVALO_SCAN_IA:
+                        ultimo_ia = agora
 
-                if (agora - ultimo_ia) > INTERVALO_SCAN_IA:
-                    ultimo_ia = agora
+                        inicio_inferencia = time.time()
 
-                    small = cv2.resize(frame, (0, 0), fx=0.25, fy=0.25)
-                    rgb = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
+                        small = cv2.resize(frame, (0, 0), fx=0.25, fy=0.25)
+                        rgb_small = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
 
-                    locs = face_recognition.face_locations(rgb)
-                    caixas_detectadas = locs
-                    nomes_detectados = []
-
-                    if locs:
-                        encs = face_recognition.face_encodings(rgb, locs)
-                        for enc in encs:
-                            name = "Desconhecido"
-                            with lock:
-                                face_distances = face_recognition.face_distance(
-                                    lista_encodings, enc
-                                )
-                                if len(face_distances) > 0:
-                                    best_match_index = np.argmin(face_distances)
-                                    distancia_minima = face_distances[best_match_index]
-
-                                    if distancia_minima < 0.5:
-                                        name = lista_nomes[best_match_index]
-
-                                        em_cooldown = (
-                                            agora - ultimo_sucesso
-                                        ) < DELAY_RECONHECIMENTO
-                                        if not em_cooldown:
-                                            confianca_pct = round(
-                                                (1.0 - distancia_minima) * 100, 2
-                                            )
-                                            registrar_acesso_db(
-                                                name, confianca_pct, frame_cru.copy()
-                                            )
-
-                                            ultimo_sucesso = agora
-                                            nome_detectado = name
-
-                            nomes_detectados.append(name)
-                    else:
+                        locs_small = face_recognition.face_locations(rgb_small)
+                        caixas_detectadas = locs_small
                         nomes_detectados = []
 
-                for (top, right, bottom, left), name in zip(
-                    caixas_detectadas, nomes_detectados
-                ):
-                    top *= 4
-                    right *= 4
-                    bottom *= 4
-                    left *= 4
-                    cor = COR_RECONHECIDO if name != "Desconhecido" else (0, 0, 255)
-                    cv2.rectangle(frame, (left, top), (right, bottom), cor, 2)
-                    cv2.rectangle(
-                        frame, (left, bottom - 35), (right, bottom), cor, cv2.FILLED
-                    )
+                        if locs_small:
+                            locs_full = [
+                                (top * 4, right * 4, bottom * 4, left * 4)
+                                for (top, right, bottom, left) in locs_small
+                            ]
+
+                            rgb_full = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+                            encs = face_recognition.face_encodings(
+                                rgb_full, locs_full, num_jitters=2
+                            )
+
+                            for enc in encs:
+                                name = "Desconhecido"
+                                with lock:
+                                    face_distances = face_recognition.face_distance(
+                                        lista_encodings, enc
+                                    )
+                                    if len(face_distances) > 0:
+                                        best_match_index = np.argmin(face_distances)
+                                        distancia_minima = face_distances[
+                                            best_match_index
+                                        ]
+
+                                        if distancia_minima < 0.45:
+                                            name = lista_nomes[best_match_index]
+
+                                            em_cooldown = (
+                                                agora - ultimo_sucesso
+                                            ) < DELAY_RECONHECIMENTO
+                                            if not em_cooldown:
+                                                tempo_inferencia_ms = int(
+                                                    (time.time() - inicio_inferencia)
+                                                    * 1000
+                                                )
+                                                temp_atual = ler_temperatura()
+
+                                                confianca_pct = round(
+                                                    (1.0 - distancia_minima) * 100, 2
+                                                )
+
+                                                registrar_acesso_db(
+                                                    name,
+                                                    confianca_pct,
+                                                    frame_cru.copy(),
+                                                    tempo_inferencia_ms,
+                                                    temp_atual,
+                                                )
+
+                                                ultimo_sucesso = agora
+                                                nome_detectado = name
+
+                                nomes_detectados.append(name)
+                        else:
+                            nomes_detectados = []
+
+                    for (top, right, bottom, left), name in zip(
+                        caixas_detectadas, nomes_detectados
+                    ):
+                        top *= 4
+                        right *= 4
+                        bottom *= 4
+                        left *= 4
+                        cor = COR_RECONHECIDO if name != "Desconhecido" else (0, 0, 255)
+                        cv2.rectangle(frame, (left, top), (right, bottom), cor, 2)
+                        cv2.rectangle(
+                            frame, (left, bottom - 35), (right, bottom), cor, cv2.FILLED
+                        )
+                        cv2.putText(
+                            frame,
+                            name,
+                            (left + 6, bottom - 6),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.8,
+                            (255, 255, 255),
+                            1,
+                        )
+                else:
+                    caixas_detectadas = []
+                    nomes_detectados = []
                     cv2.putText(
                         frame,
-                        name,
-                        (left + 6, bottom - 6),
+                        "Aproxime-se do Totem para liberar acesso",
+                        (150, 50),
                         cv2.FONT_HERSHEY_SIMPLEX,
-                        0.8,
-                        (255, 255, 255),
-                        1,
+                        1.0,
+                        (0, 255, 255),
+                        2,
                     )
 
                 if (agora - ultimo_sucesso) < DELAY_RECONHECIMENTO:
@@ -508,27 +610,41 @@ def loop_principal():
     cv2.destroyAllWindows()
 
 
-# API FLASK
+# API FLASK.
 @app.route("/api/cadastrar_direto", methods=["POST"])
 def cadastrar_direto():
     global lista_encodings, lista_nomes
     if "foto" not in request.files or "nome" not in request.form:
         return jsonify({"erro": "Dados incompletos"}), 400
+
     file = request.files["foto"]
     name = request.form["nome"]
 
-    img = cv2.imdecode(np.frombuffer(file.read(), np.uint8), cv2.IMREAD_COLOR)
-    rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-    boxes = face_recognition.face_locations(rgb)
+    file_bytes = np.frombuffer(file.read(), np.uint8)
+    img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
 
-    if boxes:
-        encs = face_recognition.face_encodings(rgb, boxes)
-        with lock:
-            cadastrar_usuario_db(name)
-            lista_encodings.append(encs[0])
-            lista_nomes.append(name)
-            salvar_dados()
-        return jsonify({"msg": f"Sucesso! {name} cadastrado."}), 201
+    if img is None:
+        return jsonify({"erro": "Imagem invalida ou corrompida"}), 400
+
+    altura, largura = img.shape[:2]
+    if largura > 800:
+        proporcao = 800.0 / largura
+        img = cv2.resize(img, (800, int(altura * proporcao)))
+
+    rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+
+    with lock:
+        boxes = face_recognition.face_locations(rgb)
+
+        if boxes:
+            encs = face_recognition.face_encodings(rgb, boxes, num_jitters=5)
+            if len(encs) > 0:
+                cadastrar_usuario_db(name)
+                lista_encodings.append(encs[0])
+                lista_nomes.append(name)
+                salvar_dados()
+                return jsonify({"msg": f"Sucesso! {name} cadastrado."}), 201
+
     return jsonify({"erro": "Rosto nao encontrado na foto"}), 400
 
 
@@ -537,14 +653,13 @@ def cadastrar_direto():
 def relatorio_acessos():
     conn = sqlite3.connect(BANCO_DADOS)
     c = conn.cursor()
-    c.execute(
-        """
-        SELECT u.nome, l.data_hora, l.confianca_reconhecimento, l.foto_momento
+    c.execute("""
+        SELECT u.nome, l.data_hora, l.confianca_reconhecimento, l.foto_momento,
+               l.status_acesso, l.tempo_inferencia_ms, l.hardware_temp_c
         FROM Logs_Acesso l
         JOIN Usuarios u ON l.usuario_id = u.id
         ORDER BY l.data_hora DESC LIMIT 100
-    """
-    )
+    """)
     logs = []
     for row in c.fetchall():
         logs.append(
@@ -552,11 +667,14 @@ def relatorio_acessos():
                 "usuario": row[0],
                 "data_hora": row[1],
                 "confianca_pct": row[2],
+                "status_acesso": row[4] if row[4] else "LIBERADO",
+                "tempo_inferencia_ms": row[5] if row[5] else 0,
+                "hardware_temp_c": row[6] if row[6] else 0.0,
                 "foto_caminho": row[3],
             }
         )
     conn.close()
-    return jsonify({"total_logs": len(logs), "acessos": logs})
+    return jsonify(logs)
 
 
 @app.route("/video_feed")
@@ -577,12 +695,18 @@ def video_feed():
     return Response(gen(), mimetype="multipart/x-mixed-replace; boundary=frame")
 
 
+def rodar_servidor():
+    app.run(
+        host="0.0.0.0", port=5000, debug=False, use_reloader=False
+    )  # mudar a porta quase ja tenha um processo nessa
+
+
 if __name__ == "__main__":
     iniciar_banco()
     carregar_dados()
-    t = threading.Thread(target=loop_principal)
-    t.daemon = True
-    t.start()
-    app.run(
-        host="0.0.0.0", port=5000, debug=False
-    )  # mudar a porta se já tiver uma aplicacao rodando (que é o meu caso)
+
+    t_flask = threading.Thread(target=rodar_servidor)
+    t_flask.daemon = True
+    t_flask.start()
+
+    loop_principal()
