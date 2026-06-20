@@ -9,7 +9,7 @@ import os
 import sqlite3
 import math
 import sys
-
+import socket
 
 from datetime import datetime
 from flask import Flask, Response, jsonify, request
@@ -18,7 +18,7 @@ from flask import Flask, Response, jsonify, request
 ARQUIVO_DADOS = "encodings.pickle"
 BANCO_DADOS = "totem_banco.db"
 PASTA_LOGS = "logs_imagens"
-URL_CAMERA = "http://192.168.18.159/stream"
+URL_CAMERA = 0
 PASTA_DATASET = "dataset"
 INTERVALO_SCAN_IA = 1.0
 DELAY_RECONHECIMENTO = 5.0
@@ -51,14 +51,15 @@ DISTANCIA_GATILHO_MM = 800  # 80 centímetros
 pessoa_na_frente = True
 
 
-# função que lê o sensor térmico nativo do processador do Labrador
-def ler_temperatura():
+def obter_ip_local():
     try:
-        with open("/sys/class/thermal/thermal_zone0/temp", "r") as f:
-            temp = float(f.read()) / 1000.0
-        return round(temp, 1)
-    except:
-        return 0.0
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return "127.0.0.1"
 
 
 # CRIAÇÃO DO BANCO DE DADOS
@@ -121,7 +122,7 @@ def cadastrar_usuario_db(nome, nivel="Aluno"):
 
 
 # Funcao para registro de logs de acesso
-def registrar_acesso_db(nome, confianca, frame_capturado, tempo_ms, temp_c):
+def registrar_acesso_db(nome, confianca, frame_capturado, tempo_ms):
     conn = sqlite3.connect(BANCO_DADOS)
     c = conn.cursor()
 
@@ -144,25 +145,23 @@ def registrar_acesso_db(nome, confianca, frame_capturado, tempo_ms, temp_c):
 
     c.execute(
         """
-        INSERT INTO Logs_Acesso (usuario_id, data_hora, confianca_reconhecimento, foto_momento, status_acesso, tempo_inferencia_ms, hardware_temp_c)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO Logs_Acesso (usuario_id, data_hora, confianca_reconhecimento, foto_momento, status_acesso, tempo_inferencia_ms)
+        VALUES (?, ?, ?, ?, ?, ?)
     """,
-        (user_id, agora_dt, confianca, nome_arquivo, "LIBERADO", tempo_ms, temp_c),
+        (user_id, agora_dt, confianca, nome_arquivo, "LIBERADO", tempo_ms),
     )
 
     conn.commit()
     print(
-        f"[AUDITORIA] Acesso salvo: {nome} | Confiança: {confianca}% | Tempo: {tempo_ms}ms | Temp: {temp_c}°C"
+        f"[AUDITORIA] Acesso salvo: {nome} | Confiança: {confianca}% | Tempo: {tempo_ms}ms"
     )
     conn.close()
 
 
 # VÍDEO STREAM
 class VideoStream:
-    def __init__(self, src):
-        self.src = src
-        self.stream = None
-        self.bytes_buffer = bytes()
+    def __init__(self, src=0):
+        self.stream = cv2.VideoCapture(src)
         self.ultimo_frame = None
         self.rodando = False
         self.lock = threading.Lock()
@@ -176,37 +175,18 @@ class VideoStream:
 
     def update(self):
         while self.rodando:
-            try:
-                if self.stream is None:
-                    self.stream = requests.get(self.src, stream=True, timeout=5)
-
-                for chunk in self.stream.iter_content(chunk_size=4096):
-                    if not self.rodando:
-                        if self.stream:
-                            self.stream.close()
-                        break
-                    self.bytes_buffer += chunk
-                    a = self.bytes_buffer.find(b"\xff\xd8")
-                    b = self.bytes_buffer.find(b"\xff\xd9")
-                    if a != -1 and b != -1:
-                        jpg = self.bytes_buffer[a : b + 2]
-                        self.bytes_buffer = self.bytes_buffer[b + 2 :]
-                        img = cv2.imdecode(
-                            np.frombuffer(jpg, dtype=np.uint8), cv2.IMREAD_COLOR
-                        )
-                        with self.lock:
-                            self.ultimo_frame = img
-            except:
-                self.stream = None
-                self.bytes_buffer = bytes()
-                time.sleep(2)
+            ret, frame = self.stream.read()
+            if ret:
+                with self.lock:
+                    self.ultimo_frame = frame
+            else:
+                time.sleep(0.1)
 
     def read(self):
         with self.lock:
-            return self.ultimo_frame
-
-    def stop(self):
-        self.rodando = False
+            if self.ultimo_frame is not None:
+                return self.ultimo_frame.copy()
+            return None
 
 
 # FUNÇÕES DE DADOS (PICKLE + DB)
@@ -373,6 +353,8 @@ def loop_principal():
     caixas_detectadas = []
     nomes_detectados = []
 
+    meu_ip = obter_ip_local()
+
     while True:
         try:
             frame_cru = stream.read()
@@ -434,7 +416,6 @@ def loop_principal():
                                                     (time.time() - inicio_inferencia)
                                                     * 1000
                                                 )
-                                                temp_atual = ler_temperatura()
 
                                                 confianca_pct = round(
                                                     (1.0 - distancia_minima) * 100, 2
@@ -445,7 +426,6 @@ def loop_principal():
                                                     confianca_pct,
                                                     frame_cru.copy(),
                                                     tempo_inferencia_ms,
-                                                    temp_atual,
                                                 )
 
                                                 ultimo_sucesso = agora
@@ -556,7 +536,7 @@ def loop_principal():
                 cv2.putText(
                     frame,
                     "MODO SERVIDOR",
-                    (320, 300),
+                    (320, 260),
                     cv2.FONT_HERSHEY_SIMPLEX,
                     1.5,
                     COR_RECONHECIDO,
@@ -564,20 +544,29 @@ def loop_principal():
                 )
                 cv2.putText(
                     frame,
-                    "API de Relatorios disponivel em:",
-                    (250, 380),
+                    f"Servidor ativo em: {meu_ip}:5000",
+                    (240, 320),
                     cv2.FONT_HERSHEY_SIMPLEX,
-                    1.0,
+                    0.9,
+                    (0, 255, 255),
+                    2,
+                )
+                cv2.putText(
+                    frame,
+                    "- Relatorio: /api/relatorio",
+                    (230, 380),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.8,
                     COR_TEXTO,
                     2,
                 )
                 cv2.putText(
                     frame,
-                    "http://192.168.18.149:5000/api/relatorio",
+                    "- Cadastro:  /api/cadastrar_direto",
                     (230, 430),
                     cv2.FONT_HERSHEY_SIMPLEX,
-                    0.9,
-                    (0, 255, 255),
+                    0.8,
+                    COR_TEXTO,
                     2,
                 )
 
@@ -655,7 +644,7 @@ def relatorio_acessos():
     c = conn.cursor()
     c.execute("""
         SELECT u.nome, l.data_hora, l.confianca_reconhecimento, l.foto_momento,
-               l.status_acesso, l.tempo_inferencia_ms, l.hardware_temp_c
+               l.status_acesso, l.tempo_inferencia_ms
         FROM Logs_Acesso l
         JOIN Usuarios u ON l.usuario_id = u.id
         ORDER BY l.data_hora DESC LIMIT 100
@@ -669,7 +658,6 @@ def relatorio_acessos():
                 "confianca_pct": row[2],
                 "status_acesso": row[4] if row[4] else "LIBERADO",
                 "tempo_inferencia_ms": row[5] if row[5] else 0,
-                "hardware_temp_c": row[6] if row[6] else 0.0,
                 "foto_caminho": row[3],
             }
         )
