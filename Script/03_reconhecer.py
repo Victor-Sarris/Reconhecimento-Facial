@@ -18,9 +18,11 @@ from flask import Flask, Response, jsonify, request
 ARQUIVO_DADOS = "encodings.pickle"
 BANCO_DADOS = "totem_banco.db"
 PASTA_LOGS = "logs_imagens"
-URL_CAMERA = 0
+URL_CAMERA = "http://192.168.1.40:4747/video"
 PASTA_DATASET = "dataset"
-INTERVALO_SCAN_IA = 1.0
+INTERVALO_SCAN_IA = 4.0
+# Adicione junto às outras variáveis globais partilhadas da IA
+ultimo_nome_reconhecido = None  # Guarda o nome da última pessoa que gerou um log válido
 DELAY_RECONHECIMENTO = 5.0
 
 LARGURA_TELA = 1024
@@ -45,8 +47,14 @@ lista_nomes = []
 nome_novo_cadastro = ""
 buffer_fotos_novas = []
 
-# MODULO A LASER (VL53L0X)
+# VARIÁVEIS GLOBAIS PARTILHADAS PARA A THREAD DA IA
+ia_processando = False
+caixas_detectadas = []
+nomes_detectados = []
+ultimo_sucesso = 0
+nome_detectado = ""
 
+# MODULO A LASER (VL53L0X)
 DISTANCIA_GATILHO_MM = 800  # 80 centímetros
 pessoa_na_frente = True
 
@@ -89,12 +97,8 @@ def iniciar_banco():
     """)
 
     try:
-        c.execute(
-            "ALTER TABLE Logs_Acesso ADD COLUMN status_acesso TEXT DEFAULT 'LIBERADO'"
-        )
-        c.execute(
-            "ALTER TABLE Logs_Acesso ADD COLUMN tempo_inferencia_ms INTEGER DEFAULT 0"
-        )
+        c.execute("ALTER TABLE Logs_Acesso ADD COLUMN status_acesso TEXT DEFAULT 'LIBERADO'")
+        c.execute("ALTER TABLE Logs_Acesso ADD COLUMN tempo_inferencia_ms INTEGER DEFAULT 0")
         c.execute("ALTER TABLE Logs_Acesso ADD COLUMN hardware_temp_c REAL DEFAULT 0.0")
     except sqlite3.OperationalError:
         pass
@@ -105,7 +109,6 @@ def iniciar_banco():
 
 
 def cadastrar_usuario_db(nome, nivel="Aluno"):
-    # Grava o usuário no banco de dados relacional.
     conn = sqlite3.connect(BANCO_DADOS)
     c = conn.cursor()
     try:
@@ -121,7 +124,6 @@ def cadastrar_usuario_db(nome, nivel="Aluno"):
         conn.close()
 
 
-# Funcao para registro de logs de acesso
 def registrar_acesso_db(nome, confianca, frame_capturado, tempo_ms):
     conn = sqlite3.connect(BANCO_DADOS)
     c = conn.cursor()
@@ -152,9 +154,7 @@ def registrar_acesso_db(nome, confianca, frame_capturado, tempo_ms):
     )
 
     conn.commit()
-    print(
-        f"[AUDITORIA] Acesso salvo: {nome} | Confiança: {confianca}% | Tempo: {tempo_ms}ms"
-    )
+    print(f"[AUDITORIA] Acesso salvo: {nome} | Confiança: {confianca}% | Tempo: {tempo_ms}ms")
     conn.close()
 
 
@@ -213,7 +213,6 @@ def salvar_dados():
 def treinar_novas_fotos(nome, lista_fotos):
     global lista_encodings, lista_nomes
 
-    # Registra no Banco de Dados SQLite
     cadastrar_usuario_db(nome)
 
     pasta = os.path.join(PASTA_DATASET, nome)
@@ -239,41 +238,14 @@ def treinar_novas_fotos(nome, lista_fotos):
 
 # INTERFACE & CLIQUES
 def desenhar_interface(frame):
-    cv2.rectangle(
-        frame, (0, ALTURA_TELA - 100), (LARGURA_TELA, ALTURA_TELA), COR_BARRA_FUNDO, -1
-    )
+    cv2.rectangle(frame, (0, ALTURA_TELA - 100), (LARGURA_TELA, ALTURA_TELA), COR_BARRA_FUNDO, -1)
+    cv2.rectangle(frame, (50, ALTURA_TELA - 80), (300, ALTURA_TELA - 20), COR_BTN_FUNDO, -1)
+    cv2.rectangle(frame, (50, ALTURA_TELA - 80), (300, ALTURA_TELA - 20), (255, 255, 255), 1)
+    cv2.putText(frame, "Capturar", (110, ALTURA_TELA - 40), cv2.FONT_HERSHEY_SIMPLEX, 0.8, COR_TEXTO, 2)
 
-    cv2.rectangle(
-        frame, (50, ALTURA_TELA - 80), (300, ALTURA_TELA - 20), COR_BTN_FUNDO, -1
-    )
-    cv2.rectangle(
-        frame, (50, ALTURA_TELA - 80), (300, ALTURA_TELA - 20), (255, 255, 255), 1
-    )
-    cv2.putText(
-        frame,
-        "Capturar",
-        (110, ALTURA_TELA - 40),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.8,
-        COR_TEXTO,
-        2,
-    )
-
-    cv2.rectangle(
-        frame, (350, ALTURA_TELA - 80), (600, ALTURA_TELA - 20), COR_BTN_FUNDO, -1
-    )
-    cv2.rectangle(
-        frame, (350, ALTURA_TELA - 80), (600, ALTURA_TELA - 20), (255, 255, 255), 1
-    )
-    cv2.putText(
-        frame,
-        "Envio Remoto",
-        (390, ALTURA_TELA - 40),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.8,
-        COR_TEXTO,
-        2,
-    )
+    cv2.rectangle(frame, (350, ALTURA_TELA - 80), (600, ALTURA_TELA - 20), COR_BTN_FUNDO, -1)
+    cv2.rectangle(frame, (350, ALTURA_TELA - 80), (600, ALTURA_TELA - 20), (255, 255, 255), 1)
+    cv2.putText(frame, "Envio Remoto", (390, ALTURA_TELA - 40), cv2.FONT_HERSHEY_SIMPLEX, 0.8, COR_TEXTO, 2)
 
 
 def gerenciar_cliques(event, x, y, flags, param):
@@ -294,48 +266,76 @@ def gerenciar_cliques(event, x, y, flags, param):
             estado_atual = MODO_RECONHECIMENTO
 
 
-def alinhar_rosto(imagem_rbg):
-    landmarks_lista = face_recognition.face_landmarks(imagem_rbg)
+# FUNÇÃO QUE COMPUTA A IA EM BACKGROUND (THREAD PARALELA)
+def processar_ia_async(frame_ia, frame_cru_ia):
+    global ia_processando, caixas_detectadas, nomes_detectados, ultimo_sucesso, nome_detectado
+    global ultimo_nome_reconhecido  # Permite ler e alterar a memória de estado do Totem
+    
+    try:
+        inicio_inferencia = time.time()
+        agora = inicio_inferencia
 
-    # se nao achar nenhum rosto na imagem
-    if not landmarks_lista:
-        return imagem_rbg
+        small = cv2.resize(frame_ia, (0, 0), fx=0.25, fy=0.25)
+        rgb_small = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
 
-    # se achar
-    landmarks = landmarks_lista[0]
+        locs_small = face_recognition.face_locations(rgb_small)
+        
+        # GATILHO 1: Se a tela estiver completamente vazia, limpa o estado de memória
+        if not locs_small:
+            with lock:
+                ultimo_nome_reconhecido = None
+                caixas_detectadas = []
+                nomes_detectados = []
+            return
 
-    # coordenadas dos olhos
-    olho_esquerdo = landmarks["left_eye"]
-    olho_direito = landmarks["right_eye"]
+        locs_full = [(top * 4, right * 4, bottom * 4, left * 4) for (top, right, bottom, left) in locs_small]
+        rgb_full = cv2.cvtColor(frame_ia, cv2.COLOR_BGR2RGB)
+        encs = face_recognition.face_encodings(rgb_full, locs_full, num_jitters=1)
 
-    # cacula o centro de cada olho
-    centro_esq = np.mean(olho_esquerdo, axis=0).astype(int)
-    centro_dir = np.mean(olho_direito, axis=0).astype(int)
+        novas_caixas = locs_small
+        novos_nomes = []
 
-    # calcula o angulo de inclinacao
-    dY = centro_dir[1] - centro_esq[1]
-    dX = centro_dir[0] - centro_esq[0]
-    angulo = np.degrees(math.atan2(dY, dX))
+        for enc in encs:
+            name = "Desconhecido"
+            with lock:
+                face_distances = face_recognition.face_distance(lista_encodings, enc)
+                if len(face_distances) > 0:
+                    best_match_index = np.argmin(face_distances)
+                    distancia_minima = face_distances[best_match_index]
 
-    # calcula o ponto central
-    eixo_rotacao = (
-        int((centro_esq[0] + centro_dir[0]) / 2),
-        int((centro_esq[1] + centro_dir[1]) / 2),
-    )
+                    if distancia_minima < 0.45:
+                        name = lista_nomes[best_match_index]
 
-    # rotaciona a imagem
-    altura, largura = imagem_rbg.shape[:2]
-    matriz_rotacao = cv2.getRotationMatrix2D(eixo_rotacao, angulo, 1.0)
-    imagem_alinhada = cv2.warpAffine(
-        imagem_rbg, matriz_rotacao, (largura, altura), flags=cv2.INTER_CUBIC
-    )
+            # GATILHO 2: Verificação e Controle de Duplicação de Log
+            with lock:
+                # Só gera log se o rosto atual for DIFERENTE do último que guardámos
+                if name != ultimo_nome_reconhecido:
+                    tempo_inferencia_ms = int((time.time() - inicio_inferencia) * 1000)
+                    confianca_pct = round((1.0 - distancia_minima) * 100, 2) if len(face_distances) > 0 else 0.0
+                    
+                    # Regista o acesso de forma segura no SQLite
+                    registrar_acesso_db(name, confianca_pct, frame_cru_ia.copy(), tempo_inferencia_ms)
+                    
+                    # Atualiza a memória para evitar novos logs repetidos deste utilizador
+                    ultimo_nome_reconhecido = name  
+                    ultimo_sucesso = agora
+                    nome_detectado = name
 
-    return imagem_alinhada
+            novos_nomes.append(name)
 
+        with lock:
+            caixas_detectadas = novas_caixas
+            nomes_detectados = novos_nomes
 
-# LOOP PRINCIPAL
+    except Exception as e:
+        print(f"[ERRO THREAD IA] {e}")
+    finally:
+        ia_processando = False
+
+# LOOP PRINCIPAL (THREAD PRINCIPAL - FOCO EM FLUIDEZ VISUAL)
 def loop_principal():
     global frame_atual, estado_atual, nome_novo_cadastro, buffer_fotos_novas
+    global ia_processando, caixas_detectadas, nomes_detectados, ultimo_sucesso, nome_detectado
 
     stream = VideoStream(URL_CAMERA).start()
     time.sleep(2)
@@ -348,11 +348,6 @@ def loop_principal():
     cv2.setWindowProperty("Totem", cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
 
     ultimo_ia = 0
-    ultimo_sucesso = 0
-    nome_detectado = ""
-    caixas_detectadas = []
-    nomes_detectados = []
-
     meu_ip = obter_ip_local()
 
     while True:
@@ -369,84 +364,32 @@ def loop_principal():
 
                 agora = time.time()
                 if pessoa_na_frente:
-                    if (agora - ultimo_ia) > INTERVALO_SCAN_IA:
+                    # Verifica o temporizador e se não há nenhuma análise ativa em background
+                    if not ia_processando and (agora - ultimo_ia) > INTERVALO_SCAN_IA:
                         ultimo_ia = agora
+                        ia_processando = True
+                        
+                        # Dispara a thread secundária para computar a IA de forma assíncrona
+                        t_ia = threading.Thread(
+                            target=processar_ia_async, 
+                            args=(frame.copy(), frame_cru.copy())
+                        )
+                        t_ia.daemon = True
+                        t_ia.start()
 
-                        inicio_inferencia = time.time()
+                    # Faz uma cópia rápida sob proteção do lock para renderizar as caixas na tela
+                    with lock:
+                        caixas_locais = caixas_detectadas.copy()
+                        nomes_locais = nomes_detectados.copy()
 
-                        small = cv2.resize(frame, (0, 0), fx=0.25, fy=0.25)
-                        rgb_small = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
-
-                        locs_small = face_recognition.face_locations(rgb_small)
-                        caixas_detectadas = locs_small
-                        nomes_detectados = []
-
-                        if locs_small:
-                            locs_full = [
-                                (top * 4, right * 4, bottom * 4, left * 4)
-                                for (top, right, bottom, left) in locs_small
-                            ]
-
-                            rgb_full = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-
-                            encs = face_recognition.face_encodings(
-                                rgb_full, locs_full, num_jitters=2
-                            )
-
-                            for enc in encs:
-                                name = "Desconhecido"
-                                with lock:
-                                    face_distances = face_recognition.face_distance(
-                                        lista_encodings, enc
-                                    )
-                                    if len(face_distances) > 0:
-                                        best_match_index = np.argmin(face_distances)
-                                        distancia_minima = face_distances[
-                                            best_match_index
-                                        ]
-
-                                        if distancia_minima < 0.45:
-                                            name = lista_nomes[best_match_index]
-
-                                            em_cooldown = (
-                                                agora - ultimo_sucesso
-                                            ) < DELAY_RECONHECIMENTO
-                                            if not em_cooldown:
-                                                tempo_inferencia_ms = int(
-                                                    (time.time() - inicio_inferencia)
-                                                    * 1000
-                                                )
-
-                                                confianca_pct = round(
-                                                    (1.0 - distancia_minima) * 100, 2
-                                                )
-
-                                                registrar_acesso_db(
-                                                    name,
-                                                    confianca_pct,
-                                                    frame_cru.copy(),
-                                                    tempo_inferencia_ms,
-                                                )
-
-                                                ultimo_sucesso = agora
-                                                nome_detectado = name
-
-                                nomes_detectados.append(name)
-                        else:
-                            nomes_detectados = []
-
-                    for (top, right, bottom, left), name in zip(
-                        caixas_detectadas, nomes_detectados
-                    ):
+                    for (top, right, bottom, left), name in zip(caixas_locais, nomes_locais):
                         top *= 4
                         right *= 4
                         bottom *= 4
                         left *= 4
                         cor = COR_RECONHECIDO if name != "Desconhecido" else (0, 0, 255)
                         cv2.rectangle(frame, (left, top), (right, bottom), cor, 2)
-                        cv2.rectangle(
-                            frame, (left, bottom - 35), (right, bottom), cor, cv2.FILLED
-                        )
+                        cv2.rectangle(frame, (left, bottom - 35), (right, bottom), cor, cv2.FILLED)
                         cv2.putText(
                             frame,
                             name,
@@ -457,8 +400,9 @@ def loop_principal():
                             1,
                         )
                 else:
-                    caixas_detectadas = []
-                    nomes_detectados = []
+                    with lock:
+                        caixas_detectadas = []
+                        nomes_detectados = []
                     cv2.putText(
                         frame,
                         "Aproxime-se do Totem para liberar acesso",
@@ -470,12 +414,8 @@ def loop_principal():
                     )
 
                 if (agora - ultimo_sucesso) < DELAY_RECONHECIMENTO:
-                    tempo_restante = int(
-                        DELAY_RECONHECIMENTO - (agora - ultimo_sucesso)
-                    )
-                    cv2.rectangle(
-                        frame, (0, 0), (LARGURA_TELA, 80), COR_RECONHECIDO, -1
-                    )
+                    tempo_restante = int(DELAY_RECONHECIMENTO - (agora - ultimo_sucesso))
+                    cv2.rectangle(frame, (0, 0), (LARGURA_TELA, 80), COR_RECONHECIDO, -1)
                     cv2.putText(
                         frame,
                         f"ACESSO LIBERADO: {nome_detectado}",
@@ -498,77 +438,17 @@ def loop_principal():
             elif estado_atual == MODO_CAPTURANDO:
                 cv2.rectangle(frame, (0, 0), (LARGURA_TELA, 120), (200, 100, 0), -1)
                 msg_nome = f"NOME: {nome_novo_cadastro}_"
-                cv2.putText(
-                    frame,
-                    msg_nome,
-                    (50, 50),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    1.2,
-                    COR_TEXTO,
-                    2,
-                )
+                cv2.putText(frame, msg_nome, (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.2, COR_TEXTO, 2)
                 info = f"[ESPACO] FOTO ({len(buffer_fotos_novas)})  |  [ENTER] SALVAR  |  [ESC] VOLTAR"
-                cv2.putText(
-                    frame,
-                    info,
-                    (50, 100),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.7,
-                    (200, 200, 200),
-                    2,
-                )
+                cv2.putText(frame, info, (50, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 2)
 
             elif estado_atual == MODO_INFO_REMOTO:
-                cv2.rectangle(
-                    frame,
-                    (200, 200),
-                    (LARGURA_TELA - 200, ALTURA_TELA - 200),
-                    (0, 0, 0),
-                    -1,
-                )
-                cv2.rectangle(
-                    frame,
-                    (200, 200),
-                    (LARGURA_TELA - 200, ALTURA_TELA - 200),
-                    (255, 255, 255),
-                    2,
-                )
-                cv2.putText(
-                    frame,
-                    "MODO SERVIDOR",
-                    (320, 260),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    1.5,
-                    COR_RECONHECIDO,
-                    2,
-                )
-                cv2.putText(
-                    frame,
-                    f"Servidor ativo em: {meu_ip}:5000",
-                    (240, 320),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.9,
-                    (0, 255, 255),
-                    2,
-                )
-                cv2.putText(
-                    frame,
-                    "- Relatorio: /api/relatorio",
-                    (230, 380),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.8,
-                    COR_TEXTO,
-                    2,
-                )
-                cv2.putText(
-                    frame,
-                    "- Cadastro:  /api/cadastrar_direto",
-                    (230, 430),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.8,
-                    COR_TEXTO,
-                    2,
-                )
+                cv2.rectangle(frame, (200, 200), (LARGURA_TELA - 200, ALTURA_TELA - 200), (0, 0, 0), -1)
+                cv2.rectangle(frame, (200, 200), (LARGURA_TELA - 200, ALTURA_TELA - 200), (255, 255, 255), 2)
+                cv2.putText(frame, "MODO SERVIDOR", (320, 260), cv2.FONT_HERSHEY_SIMPLEX, 1.5, COR_RECONHECIDO, 2)
+                cv2.putText(frame, f"Servidor ativo em: {meu_ip}:5000", (240, 320), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 255), 2)
+                cv2.putText(frame, "- Relatorio: /api/relatorio", (230, 380), cv2.FONT_HERSHEY_SIMPLEX, 0.8, COR_TEXTO, 2)
+                cv2.putText(frame, "- Cadastro:  /api/cadastrar_direto", (230, 430), cv2.FONT_HERSHEY_SIMPLEX, 0.8, COR_TEXTO, 2)
 
             cv2.imshow("Totem", frame)
             with lock:
@@ -589,17 +469,17 @@ def loop_principal():
                 elif 32 <= key <= 126:
                     nome_novo_cadastro += chr(key)
 
-            if key == ord("q"):
+            if key == 9:
                 break
 
         except Exception as e:
-            time.sleep(0.1)
+            time.sleep(0.01)
 
     stream.stop()
     cv2.destroyAllWindows()
 
 
-# API FLASK.
+# API FLASK
 @app.route("/api/cadastrar_direto", methods=["POST"])
 def cadastrar_direto():
     global lista_encodings, lista_nomes
@@ -624,7 +504,6 @@ def cadastrar_direto():
 
     with lock:
         boxes = face_recognition.face_locations(rgb)
-
         if boxes:
             encs = face_recognition.face_encodings(rgb, boxes, num_jitters=5)
             if len(encs) > 0:
@@ -637,7 +516,6 @@ def cadastrar_direto():
     return jsonify({"erro": "Rosto nao encontrado na foto"}), 400
 
 
-# a rota /api/relatorio exporta os logs do banco de dados em formato JSON
 @app.route("/api/relatorio", methods=["GET"])
 def relatorio_acessos():
     conn = sqlite3.connect(BANCO_DADOS)
@@ -674,19 +552,13 @@ def video_feed():
                     time.sleep(0.1)
                     continue
                 _, enc = cv2.imencode(".jpg", frame_atual)
-            yield (
-                b"--frame\r\nContent-Type: image/jpeg\r\n\r\n"
-                + bytearray(enc)
-                + b"\r\n"
-            )
+            yield (b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + bytearray(enc) + b"\r\n")
 
     return Response(gen(), mimetype="multipart/x-mixed-replace; boundary=frame")
 
 
 def rodar_servidor():
-    app.run(
-        host="0.0.0.0", port=5000, debug=False, use_reloader=False
-    )  # mudar a porta quase ja tenha um processo nessa
+    app.run(host="0.0.0.0", port=5000, debug=False, use_reloader=False)
 
 
 if __name__ == "__main__":
