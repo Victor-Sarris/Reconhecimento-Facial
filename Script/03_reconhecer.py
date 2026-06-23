@@ -17,9 +17,7 @@ from flask import Flask, Response, jsonify, request
 # CONFIGURAÇÕES PRINCIPAIS
 ARQUIVO_DADOS = "encodings.pickle"
 BANCO_DADOS = "totem_banco.db"
-PASTA_LOGS = "logs_imagens"
 URL_CAMERA = "http://192.168.1.40:4747/video"
-PASTA_DATASET = "dataset"
 INTERVALO_SCAN_IA = 4.0
 # Adicione junto às outras variáveis globais partilhadas da IA
 ultimo_nome_reconhecido = None  # Guarda o nome da última pessoa que gerou um log válido
@@ -72,7 +70,6 @@ def obter_ip_local():
 
 # CRIAÇÃO DO BANCO DE DADOS
 def iniciar_banco():
-    os.makedirs(PASTA_LOGS, exist_ok=True)
     conn = sqlite3.connect(BANCO_DADOS)
     c = conn.cursor()
 
@@ -142,15 +139,13 @@ def registrar_acesso_db(nome, confianca, frame_capturado, tempo_ms):
         user_id = row[0]
 
     agora_dt = datetime.now()
-    nome_arquivo = f"{PASTA_LOGS}/{agora_dt.strftime('%Y%m%d_%H%M%S')}_{nome.replace(' ', '_')}.jpg"
-    cv2.imwrite(nome_arquivo, frame_capturado)
 
     c.execute(
         """
         INSERT INTO Logs_Acesso (usuario_id, data_hora, confianca_reconhecimento, foto_momento, status_acesso, tempo_inferencia_ms)
         VALUES (?, ?, ?, ?, ?, ?)
     """,
-        (user_id, agora_dt, confianca, nome_arquivo, "LIBERADO", tempo_ms),
+        (user_id, agora_dt, confianca, "FOTO_DESCARTADA", "LIBERADO", tempo_ms),
     )
 
     conn.commit()
@@ -212,28 +207,28 @@ def salvar_dados():
 
 def treinar_novas_fotos(nome, lista_fotos):
     global lista_encodings, lista_nomes
+    rostos_extraidos = 0
 
-    cadastrar_usuario_db(nome)
-
-    pasta = os.path.join(PASTA_DATASET, nome)
-    if not os.path.exists(pasta):
-        os.makedirs(pasta)
-
-    count = len(os.listdir(pasta))
+    # Não criamos pastas, operamos direto na memória RAM
     for img in lista_fotos:
-        filename = f"{pasta}/{count}.jpg"
-        cv2.imwrite(filename, img)
-        count += 1
-
         rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         boxes = face_recognition.face_locations(rgb, model="hog")
         encs = face_recognition.face_encodings(rgb, boxes, num_jitters=5)
+        
         for enc in encs:
             with lock:
                 lista_encodings.append(enc)
                 lista_nomes.append(nome)
-
-    salvar_dados()
+                rostos_extraidos += 1
+    
+    # Validação de Segurança e Feedback
+    if rostos_extraidos > 0:
+        # Só cadastra no banco e salva o pickle se a IA capturou o rosto
+        cadastrar_usuario_db(nome)
+        salvar_dados()
+        print(f"[IA] Sucesso! {rostos_extraidos} vetor(es) biométrico(s) salvo(s) para '{nome}'.")
+    else:
+        print(f"[ERRO IA] Rosto não detectado nas fotos de '{nome}'. Nenhuma biometria salva. Tente novamente com melhor iluminação.")
 
 
 # INTERFACE & CLIQUES
