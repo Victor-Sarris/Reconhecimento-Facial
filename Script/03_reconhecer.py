@@ -13,6 +13,7 @@ import socket
 
 from datetime import datetime
 from flask import Flask, Response, jsonify, request
+from cryptography.fernet import Fernet
 
 # CONFIGURAÇÕES PRINCIPAIS
 ARQUIVO_DADOS = "encodings.pickle"
@@ -56,6 +57,23 @@ nome_detectado = ""
 DISTANCIA_GATILHO_MM = 800  # 80 centímetros
 pessoa_na_frente = True
 
+ARQUIVO_CHAVE = "chave_mestra.key"
+
+def carregar_ou_gerar_chave():
+    """Gere uma chave Fernet ou carrega uma existente. (Temporário para testes locais)"""
+    if not os.path.exists(ARQUIVO_CHAVE):
+        chave = Fernet.generate_key()
+        with open(ARQUIVO_CHAVE, "wb") as f:
+            f.write(chave)
+        print("[SEGURANÇA] Nova chave criptográfica gerada.")
+        return chave
+    else:
+        with open(ARQUIVO_CHAVE, "rb") as f:
+            return f.read()
+
+# Inicializamos o objeto Fernet que será usado para trancar/destrancar os dados
+CHAVE_SESSAO = carregar_ou_gerar_chave()
+fernet_cipher = Fernet(CHAVE_SESSAO)
 
 def obter_ip_local():
     try:
@@ -188,12 +206,27 @@ class VideoStream:
 def carregar_dados():
     global lista_encodings, lista_nomes
     try:
+        # 1. Lê os bytes criptografados do disco
         with open(ARQUIVO_DADOS, "rb") as f:
-            data = pickle.load(f)
+            dados_cifrados = f.read()
+            
+        # 2. Descriptografar de volta para bytes legíveis usando a chave
+        dados_em_bytes = fernet_cipher.decrypt(dados_cifrados)
+        
+        # 3. Desserializar: Reconstrói o dicionário na memória RAM (usa-se loads e não load)
+        data = pickle.loads(dados_em_bytes)
+        
         lista_encodings = data["encodings"]
         lista_nomes = data["names"]
-        print(f"[IA] Carregados {len(lista_nomes)} vetores faciais.")
+        print(f"[IA] Carregados {len(lista_nomes)} vetores faciais descriptografados com sucesso.")
+        
     except FileNotFoundError:
+        lista_encodings = []
+        lista_nomes = []
+        print("[IA] Banco biométrico não encontrado. Iniciando vazio.")
+    except Exception as e:
+        # Se a chave for diferente, o Fernet dispara o erro: cryptography.fernet.InvalidToken
+        print(f"[ERRO CRÍTICO LGPD] Falha de Segurança ao abrir a biometria: {e}")
         lista_encodings = []
         lista_nomes = []
 
@@ -201,8 +234,16 @@ def carregar_dados():
 def salvar_dados():
     global lista_encodings, lista_nomes
     data = {"encodings": lista_encodings, "names": lista_nomes}
+    
+    # 1. Serializar: Transforma o dicionário em bytes puros na memória RAM
+    dados_em_bytes = pickle.dumps(data)
+    
+    # 2. Criptografar: O Fernet embaralha os bytes usando AES-128 (CBC/HMAC)
+    dados_cifrados = fernet_cipher.encrypt(dados_em_bytes)
+    
+    # 3. Guardar no disco: O ficheiro final fica completamente ilegível
     with open(ARQUIVO_DADOS, "wb") as f:
-        f.write(pickle.dumps(data))
+        f.write(dados_cifrados)
 
 
 def treinar_novas_fotos(nome, lista_fotos):

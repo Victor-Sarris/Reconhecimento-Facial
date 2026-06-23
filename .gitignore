@@ -12,5 +12,6 @@ __pycache__/
 # arquivos de dados gerados.
 embeddings.pkl
 encodings.pickle
-dataset/
-logs_imagens/
+totem_banco.db-journal
+totem_banco.db
+chave_mestra.key
