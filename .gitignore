@@ -4,6 +4,7 @@ venv
 venv/
 .\venv
 .venv
+.env
 
 # arquivos temporarios do python.
 __pycache__/
@@ -15,4 +16,5 @@ encodings.pickle
 totem_banco.db-journal
 totem_banco.db
 chave_mestra.key
-.env
+matriz_projecao.npy
+totem_banco.db
