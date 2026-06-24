@@ -10,8 +10,9 @@ import sqlite3
 import math
 import sys
 import socket
+import jwt
 
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from flask import Flask, Response, jsonify, request
 from cryptography.fernet import Fernet
 
@@ -56,6 +57,28 @@ nome_detectado = ""
 # MODULO A LASER (VL53L0X)
 DISTANCIA_GATILHO_MM = 800  # 80 centímetros
 pessoa_na_frente = True
+
+CHAVE_JWT = os.environ.get("CHAVE_JWT", "chave-secreta-jwt-temporaria")
+
+def gerar_token_acesso(usuario_id, nome):
+    """Gera um JWT assinado para o sistema central da clínica."""
+    
+    # Captura a hora exata atual com o fuso horário UTC (Padrão moderno)
+    agora = datetime.now(timezone.utc)
+    
+    payload = {
+        "sub": usuario_id,                # ID do utente no banco de dados
+        "nome": nome,                     # Nome do utente
+        "nivel_acesso": "Paciente",       # Nível de permissão
+        "iat": agora,                     # Emitido em (Issued At)
+        "exp": agora + timedelta(hours=2), # Expira em 2 horas
+        "iss": "Totem_Recepcao_Labrador"  # Emissor (Issuer)
+    }
+    
+    # Assina o token com o algoritmo HS256 e a nossa chave secreta
+    token = jwt.encode(payload, CHAVE_JWT, algorithm="HS256")
+    return token
+
 
 # O Python busca a chave direto da memória do Sistema Operacional (Windows ou Linux)
 CHAVE_SESSAO = os.environ.get("CHAVE_BIOMETRIA")
@@ -185,7 +208,7 @@ def registrar_acesso_db(nome, confianca, frame_capturado, tempo_ms):
     conn.commit()
     print(f"[AUDITORIA] Acesso salvo: {nome} | Confiança: {confianca}% | Tempo: {tempo_ms}ms")
     conn.close()
-
+    return user_id
 
 # VÍDEO STREAM
 class VideoStream:
@@ -370,8 +393,15 @@ def processar_ia_async(frame_ia, frame_cru_ia):
                     tempo_inferencia_ms = int((time.time() - inicio_inferencia) * 1000)
                     confianca_pct = round((1.0 - distancia_minima) * 100, 2) if len(face_distances) > 0 else 0.0
                     
-                    # Regista o acesso de forma segura no SQLite
-                    registrar_acesso_db(name, confianca_pct, frame_cru_ia.copy(), tempo_inferencia_ms)
+                    # 1. Regista o acesso de forma segura no SQLite e obtém o ID do utilizador
+                    id_paciente = registrar_acesso_db(name, confianca_pct, frame_cru_ia.copy(), tempo_inferencia_ms)
+                    
+                    # 2. EMISSÃO DO TOKEN: O Totem age como Provedor de Identidade
+                    if name != "Desconhecido":
+                        token_jwt = gerar_token_acesso(id_paciente, name)
+                        # Aqui o seu Labrador faria um requests.post() para a API da clínica
+                        print(f"\n[REDE] 🔒 Autenticação concluída. Face destruída da memória.")
+                        print(f"[REDE] 🚀 Enviando Token JWT para a Clínica:\n{token_jwt}\n")
                     
                     # Atualiza a memória para evitar novos logs repetidos deste utilizador
                     ultimo_nome_reconhecido = name  
