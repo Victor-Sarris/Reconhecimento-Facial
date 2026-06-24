@@ -11,6 +11,7 @@ import math
 import sys
 import socket
 import jwt
+import hashlib
 
 from datetime import datetime, timedelta, timezone
 from flask import Flask, Response, jsonify, request
@@ -114,6 +115,13 @@ def carregar_ou_gerar_matriz_ortogonal(dimensao=128):
 # Carrega a matriz para a memória RAM
 MATRIZ_PROJECAO = carregar_ou_gerar_matriz_ortogonal(128)
 
+def ofuscar_nome(nome_real):
+    """Aplica hashing SHA-256 ao nome para anonimização na Base de Dados (LGPD)."""
+    # Adicionamos um "salt" (texto extra) para dificultar ataques de dicionário
+    texto_para_hash = f"CLINICA_TCC_{nome_real}"
+    return hashlib.sha256(texto_para_hash.encode()).hexdigest()
+
+
 def obter_ip_local():
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -165,15 +173,19 @@ def iniciar_banco():
 def cadastrar_usuario_db(nome, nivel="Aluno"):
     conn = sqlite3.connect(BANCO_DADOS)
     c = conn.cursor()
+    
+    # Transformamos o nome num hash gigante e irreversível
+    nome_ofuscado = ofuscar_nome(nome)
+    
     try:
         c.execute(
             "INSERT INTO Usuarios (nome, data_cadastro, nivel_acesso) VALUES (?, ?, ?)",
-            (nome, datetime.now(), nivel),
+            (nome_ofuscado, datetime.now(), nivel),
         )
         conn.commit()
-        print(f"[BANCO] Usuário '{nome}' registrado no banco.")
+        print(f"[BANCO] Usuário registado no banco com Pseudónimo de Segurança.")
     except sqlite3.IntegrityError:
-        print(f"[BANCO] Usuário '{nome}' já existe no banco.")
+        print(f"[BANCO] Usuário já existe no banco.")
     finally:
         conn.close()
 
@@ -182,13 +194,16 @@ def registrar_acesso_db(nome, confianca, frame_capturado, tempo_ms):
     conn = sqlite3.connect(BANCO_DADOS)
     c = conn.cursor()
 
-    c.execute("SELECT id FROM Usuarios WHERE nome = ?", (nome,))
+    # Aplica o hash para fazer a pesquisa de forma anónima
+    nome_ofuscado = ofuscar_nome(nome)
+
+    c.execute("SELECT id FROM Usuarios WHERE nome = ?", (nome_ofuscado,))
     row = c.fetchone()
 
     if not row:
         c.execute(
             "INSERT INTO Usuarios (nome, data_cadastro, nivel_acesso) VALUES (?, ?, ?)",
-            (nome, datetime.now(), "Migrado do Sistema Antigo"),
+            (nome_ofuscado, datetime.now(), "Migrado do Sistema Antigo"),
         )
         conn.commit()
         user_id = c.lastrowid
@@ -206,8 +221,9 @@ def registrar_acesso_db(nome, confianca, frame_capturado, tempo_ms):
     )
 
     conn.commit()
-    print(f"[AUDITORIA] Acesso salvo: {nome} | Confiança: {confianca}% | Tempo: {tempo_ms}ms")
+    print(f"[AUDITORIA] Acesso salvo (ID {user_id}) | Confiança: {confianca}% | Tempo: {tempo_ms}ms")
     conn.close()
+    
     return user_id
 
 # VÍDEO STREAM
@@ -594,14 +610,19 @@ def cadastrar_direto():
         if boxes:
             encs = face_recognition.face_encodings(rgb, boxes, num_jitters=5)
             if len(encs) > 0:
+                # -------------------------------------------------------------
+                # CORREÇÃO AQUI: Aplica o Bio-Hashing no cadastro remoto também
+                enc_cancelavel = np.dot(encs[0], MATRIZ_PROJECAO)
+                # -------------------------------------------------------------
+                
                 cadastrar_usuario_db(name)
-                lista_encodings.append(encs[0])
+                # Guarda o vetor distorcido, e não o bruto
+                lista_encodings.append(enc_cancelavel) 
                 lista_nomes.append(name)
                 salvar_dados()
                 return jsonify({"msg": f"Sucesso! {name} cadastrado."}), 201
 
     return jsonify({"erro": "Rosto nao encontrado na foto"}), 400
-
 
 @app.route("/api/relatorio", methods=["GET"])
 def relatorio_acessos():
