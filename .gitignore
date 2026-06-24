@@ -15,3 +15,4 @@ encodings.pickle
 totem_banco.db-journal
 totem_banco.db
 chave_mestra.key
+.env
