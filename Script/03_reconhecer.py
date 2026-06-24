@@ -57,23 +57,16 @@ nome_detectado = ""
 DISTANCIA_GATILHO_MM = 800  # 80 centímetros
 pessoa_na_frente = True
 
-ARQUIVO_CHAVE = "chave_mestra.key"
+# O Python busca a chave direto da memória do Sistema Operacional (Windows ou Linux)
+CHAVE_SESSAO = os.environ.get("CHAVE_BIOMETRIA")
 
-def carregar_ou_gerar_chave():
-    """Gere uma chave Fernet ou carrega uma existente. (Temporário para testes locais)"""
-    if not os.path.exists(ARQUIVO_CHAVE):
-        chave = Fernet.generate_key()
-        with open(ARQUIVO_CHAVE, "wb") as f:
-            f.write(chave)
-        print("[SEGURANÇA] Nova chave criptográfica gerada.")
-        return chave
-    else:
-        with open(ARQUIVO_CHAVE, "rb") as f:
-            return f.read()
+if not CHAVE_SESSAO:
+    print("[ERRO CRÍTICO LGPD] Variável de ambiente CHAVE_BIOMETRIA não encontrada no sistema!")
+    print("O Totem não pode iniciar sem a chave de segurança. Encerrando...")
+    sys.exit(1) # Interrompe o programa por segurança
 
-# Inicializamos o objeto Fernet que será usado para trancar/destrancar os dados
-CHAVE_SESSAO = carregar_ou_gerar_chave()
-fernet_cipher = Fernet(CHAVE_SESSAO)
+# Como a variável de ambiente vem como texto (string), usamos .encode() para transformar em bytes
+fernet_cipher = Fernet(CHAVE_SESSAO.encode())
 
 def obter_ip_local():
     try:
