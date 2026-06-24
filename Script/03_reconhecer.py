@@ -68,6 +68,29 @@ if not CHAVE_SESSAO:
 # Como a variável de ambiente vem como texto (string), usamos .encode() para transformar em bytes
 fernet_cipher = Fernet(CHAVE_SESSAO.encode())
 
+ARQUIVO_MATRIZ = "matriz_projecao.npy"
+
+def carregar_ou_gerar_matriz_ortogonal(dimensao=128):
+    """
+    Gera uma matriz ortogonal secreta para aplicar o Bio-hashing.
+    Preserva a distância euclidiana, essencial para o face_recognition.
+    """
+    if os.path.exists(ARQUIVO_MATRIZ):
+        return np.load(ARQUIVO_MATRIZ)
+    else:
+        # 1. Cria uma matriz aleatória 128x128
+        H = np.random.randn(dimensao, dimensao)
+        # 2. Aplica a decomposição QR para extrair a matriz ortogonal (Q)
+        Q, R = np.linalg.qr(H)
+        
+        # 3. Salva a matriz no disco (No futuro da clínica, isso virá da API)
+        np.save(ARQUIVO_MATRIZ, Q)
+        print("[SEGURANÇA LGPD] Nova Matriz Ortogonal de Bio-hashing gerada!")
+        return Q
+
+# Carrega a matriz para a memória RAM
+MATRIZ_PROJECAO = carregar_ou_gerar_matriz_ortogonal(128)
+
 def obter_ip_local():
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -251,7 +274,11 @@ def treinar_novas_fotos(nome, lista_fotos):
         
         for enc in encs:
             with lock:
-                lista_encodings.append(enc)
+                # BIO-HASHING: Multiplica o vetor original (128,) pela Matriz (128x128)
+                # O resultado é um vetor totalmente distorcido, mas seguro.
+                enc_cancelavel = np.dot(enc, MATRIZ_PROJECAO)
+                
+                lista_encodings.append(enc_cancelavel)
                 lista_nomes.append(nome)
                 rostos_extraidos += 1
     
@@ -327,7 +354,8 @@ def processar_ia_async(frame_ia, frame_cru_ia):
         for enc in encs:
             name = "Desconhecido"
             with lock:
-                face_distances = face_recognition.face_distance(lista_encodings, enc)
+                enc_cancelavel = np.dot(enc, MATRIZ_PROJECAO)
+                face_distances = face_recognition.face_distance(lista_encodings, enc_cancelavel)
                 if len(face_distances) > 0:
                     best_match_index = np.argmin(face_distances)
                     distancia_minima = face_distances[best_match_index]
