@@ -20,7 +20,7 @@ from cryptography.fernet import Fernet
 # CONFIGURAÇÕES PRINCIPAIS
 ARQUIVO_DADOS = "encodings.pickle"
 BANCO_DADOS = "totem_banco.db"
-URL_CAMERA = "http://192.168.1.40:4747/video"
+URL_CAMERA =  0 # camera do meu celular ->  "http://192.168.1.40:4747/video"
 INTERVALO_SCAN_IA = 4.0
 # Adicione junto às outras variáveis globais partilhadas da IA
 ultimo_nome_reconhecido = None  # Guarda o nome da última pessoa que gerou um log válido
