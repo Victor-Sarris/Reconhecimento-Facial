@@ -20,7 +20,7 @@ from cryptography.fernet import Fernet
 # CONFIGURAÇÕES PRINCIPAIS
 ARQUIVO_DADOS = "encodings.pickle"
 BANCO_DADOS = "totem_banco.db"
-URL_CAMERA =  0 # Camera do meu ceular -> "http://192.168.1.40:4747/video"
+URL_CAMERA =   "http://192.168.1.40:4747/video"
 INTERVALO_SCAN_IA = 4.0
 # Adicione junto às outras variáveis globais partilhadas da IA
 ultimo_nome_reconhecido = None  # Guarda o nome da última pessoa que gerou um log válido
@@ -333,14 +333,24 @@ def treinar_novas_fotos(nome, lista_fotos):
 
 # INTERFACE & CLIQUES
 def desenhar_interface(frame):
-    cv2.rectangle(frame, (0, ALTURA_TELA - 100), (LARGURA_TELA, ALTURA_TELA), COR_BARRA_FUNDO, -1)
-    cv2.rectangle(frame, (50, ALTURA_TELA - 80), (300, ALTURA_TELA - 20), COR_BTN_FUNDO, -1)
-    cv2.rectangle(frame, (50, ALTURA_TELA - 80), (300, ALTURA_TELA - 20), (255, 255, 255), 1)
-    cv2.putText(frame, "Capturar", (110, ALTURA_TELA - 40), cv2.FONT_HERSHEY_SIMPLEX, 0.8, COR_TEXTO, 2)
+    # 1. Cria a camada invisível para o efeito HUD
+    overlay = frame.copy()
+    
+    # 2. Desenha as formas sólidas no overlay
+    cv2.rectangle(overlay, (0, ALTURA_TELA - 100), (LARGURA_TELA, ALTURA_TELA), (30, 30, 30), -1) # Barra preta
+    cv2.rectangle(overlay, (50, ALTURA_TELA - 80), (300, ALTURA_TELA - 20), (100, 0, 0), -1)    # Botão 1 azul escuro
+    cv2.rectangle(overlay, (350, ALTURA_TELA - 80), (600, ALTURA_TELA - 20), (100, 0, 0), -1)   # Botão 2 azul escuro
 
-    cv2.rectangle(frame, (350, ALTURA_TELA - 80), (600, ALTURA_TELA - 20), COR_BTN_FUNDO, -1)
+    # 3. Aplica a transparência: 60% overlay, 40% vídeo original
+    alpha = 0.6
+    cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0, frame)
+
+    # 4. Desenha as bordas e os textos OPACOS (por cima do efeito)
+    cv2.rectangle(frame, (50, ALTURA_TELA - 80), (300, ALTURA_TELA - 20), (255, 255, 255), 1)
+    cv2.putText(frame, "Capturar Rosto", (90, ALTURA_TELA - 40), cv2.FONT_HERSHEY_SIMPLEX, 0.8, COR_TEXTO, 2)
+
     cv2.rectangle(frame, (350, ALTURA_TELA - 80), (600, ALTURA_TELA - 20), (255, 255, 255), 1)
-    cv2.putText(frame, "Envio Remoto", (390, ALTURA_TELA - 40), cv2.FONT_HERSHEY_SIMPLEX, 0.8, COR_TEXTO, 2)
+    cv2.putText(frame, "Modo Servidor", (390, ALTURA_TELA - 40), cv2.FONT_HERSHEY_SIMPLEX, 0.8, COR_TEXTO, 2)
 
 
 def gerenciar_cliques(event, x, y, flags, param):
@@ -404,25 +414,27 @@ def processar_ia_async(frame_ia, frame_cru_ia):
 
             # GATILHO 2: Verificação e Controle de Duplicação de Log
             with lock:
-                # Só gera log se o rosto atual for DIFERENTE do último que guardámos
-                if name != ultimo_nome_reconhecido:
-                    tempo_inferencia_ms = int((time.time() - inicio_inferencia) * 1000)
-                    confianca_pct = round((1.0 - distancia_minima) * 100, 2) if len(face_distances) > 0 else 0.0
-                    
-                    # 1. Regista o acesso de forma segura no SQLite e obtém o ID do utilizador
-                    id_paciente = registrar_acesso_db(name, confianca_pct, frame_cru_ia.copy(), tempo_inferencia_ms)
-                    
-                    # 2. EMISSÃO DO TOKEN: O Totem age como Provedor de Identidade
-                    if name != "Desconhecido":
-                        token_jwt = gerar_token_acesso(id_paciente, name)
-                        # Aqui o seu Labrador faria um requests.post() para a API da clínica
-                        print(f"\n[REDE] 🔒 Autenticação concluída. Face destruída da memória.")
-                        print(f"[REDE] 🚀 Enviando Token JWT para a Clínica:\n{token_jwt}\n")
-                    
-                    # Atualiza a memória para evitar novos logs repetidos deste utilizador
-                    ultimo_nome_reconhecido = name  
+                if name == "Desconhecido":
                     ultimo_sucesso = agora
                     nome_detectado = name
+                    ultimo_nome_reconhecido = None # Reseta a memória para forçar a IA a avaliar novamente no próximo ciclo
+                else:
+                    if name != ultimo_nome_reconhecido:
+                        tempo_inferencia_ms = int((time.time() - inicio_inferencia) * 1000)
+                        confianca_pct = round((1.0 - distancia_minima) * 100, 2) if len(face_distances) > 0 else 0.0
+                        
+                        # 1. Regista o acesso
+                        id_paciente = registrar_acesso_db(name, confianca_pct, frame_cru_ia.copy(), tempo_inferencia_ms)
+                        
+                        # 2. EMISSÃO DO TOKEN
+                        token_jwt = gerar_token_acesso(id_paciente, name)
+                        print(f"\n[REDE] 🔒 Autenticação concluída. Face destruída.")
+                        print(f"[REDE] 🚀 Token JWT gerado.\n")
+                        
+                        # Atualiza a memória de sucesso
+                        ultimo_nome_reconhecido = name  
+                        ultimo_sucesso = agora
+                        nome_detectado = name
 
             novos_nomes.append(name)
 
@@ -518,58 +530,97 @@ def loop_principal():
 
                 if (agora - ultimo_sucesso) < DELAY_RECONHECIMENTO:
                     tempo_restante = int(DELAY_RECONHECIMENTO - (agora - ultimo_sucesso))
-                    cv2.rectangle(frame, (0, 0), (LARGURA_TELA, 80), COR_RECONHECIDO, -1)
-                    cv2.putText(
-                        frame,
-                        f"ACESSO LIBERADO: {nome_detectado}",
-                        (50, 50),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        1.2,
-                        (0, 0, 0),
-                        3,
-                    )
-                    cv2.putText(
-                        frame,
-                        f"Aguarde {tempo_restante}s...",
-                        (LARGURA_TELA - 250, 50),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        0.7,
-                        (0, 0, 0),
-                        2,
-                    )
+                    
+                    # Lógica de Cores e Textos Dinâmicos
+                    # Lógica de Cores e Textos Dinâmicos (Design Atualizado, Lógica Antiga)
+                    if nome_detectado == "Desconhecido":
+                        cor_fundo = (0, 0, 200) # Vermelho (Padrão BGR)
+                        texto_principal = "ACESSO NEGADO: Desconhecido"
+                        texto_secundario = f"Aguarde {tempo_restante}s..."
+                    else:
+                        cor_fundo = (0, 200, 0) # Verde (Padrão BGR)
+                        texto_principal = f"ACESSO LIBERADO: {nome_detectado}"
+                        texto_secundario = f"Aguarde {tempo_restante}s..."
+
+                    # Desenha a barra superior
+                    cv2.rectangle(frame, (0, 0), (LARGURA_TELA, 80), cor_fundo, -1)
+                    cv2.putText(frame, texto_principal, (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255, 255, 255), 3)
+                    cv2.putText(frame, texto_secundario, (LARGURA_TELA - 250, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 255, 255), 2)
 
             elif estado_atual == MODO_CAPTURANDO:
-                cv2.rectangle(frame, (0, 0), (LARGURA_TELA, 120), (200, 100, 0), -1)
+               # Cria um retângulo escuro translúcido no topo
+                overlay = frame.copy()
+                cv2.rectangle(overlay, (0, 0), (LARGURA_TELA, 170), (0, 0, 0), -1)
+                cv2.addWeighted(overlay, 0.7, frame, 0.3, 0, frame)
+                
+                # Exibe o nome sendo digitado
                 msg_nome = f"NOME: {nome_novo_cadastro}_"
                 cv2.putText(frame, msg_nome, (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.2, COR_TEXTO, 2)
-                info = f"[ESPACO] FOTO ({len(buffer_fotos_novas)})  |  [ENTER] SALVAR  |  [ESC] VOLTAR"
-                cv2.putText(frame, info, (50, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 2)
+                
+                # Menu de atalhos
+                info = f"[+] TIRAR FOTO ({len(buffer_fotos_novas)})  |  [ENTER] SALVAR  |  [ESC] VOLTAR"
+                cv2.putText(frame, info, (50, 95), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 2)
+
+                # INSTRUÇÕES DINÂMICAS 
+                qtd_fotos = len(buffer_fotos_novas)
+                if qtd_fotos == 0:
+                    instrucao = "PASSO 1: Olhe para a frente e aperte [+]"
+                elif qtd_fotos == 1:
+                    instrucao = "PASSO 2: Vire o rosto para a ESQUERDA e aperte [+]"
+                elif qtd_fotos == 2:
+                    instrucao = "PASSO 3: Vire o rosto para a DIREITA e aperte [+]"
+                elif qtd_fotos == 3:
+                    instrucao = "PASSO 4: Incline o rosto para CIMA e aperte [+]"
+                elif qtd_fotos == 4:
+                    instrucao = "PASSO 5: Feche os OLHOS e aperte [+]"
+                else:
+                    instrucao = "EXCELENTE! Aperte [ENTER] para salvar."
+                
+                cv2.putText(frame, instrucao, (50, 140), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
 
             elif estado_atual == MODO_INFO_REMOTO:
-                cv2.rectangle(frame, (200, 200), (LARGURA_TELA - 200, ALTURA_TELA - 200), (0, 0, 0), -1)
-                cv2.rectangle(frame, (200, 200), (LARGURA_TELA - 200, ALTURA_TELA - 200), (255, 255, 255), 2)
-                cv2.putText(frame, "MODO SERVIDOR", (320, 260), cv2.FONT_HERSHEY_SIMPLEX, 1.5, COR_RECONHECIDO, 2)
-                cv2.putText(frame, f"Servidor ativo em: {meu_ip}:5000", (240, 320), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 255), 2)
-                cv2.putText(frame, "- Relatorio: /api/relatorio", (230, 380), cv2.FONT_HERSHEY_SIMPLEX, 0.8, COR_TEXTO, 2)
-                cv2.putText(frame, "- Cadastro:  /api/cadastrar_direto", (230, 430), cv2.FONT_HERSHEY_SIMPLEX, 0.8, COR_TEXTO, 2)
-
+                # Cria um painel central esfumaçado (Esticamos o limite inferior de -150 para -100)
+                overlay = frame.copy()
+                cv2.rectangle(overlay, (150, 150), (LARGURA_TELA - 150, ALTURA_TELA - 100), (10, 10, 10), -1)
+                cv2.addWeighted(overlay, 0.85, frame, 0.15, 0, frame)
+                
+                # Borda brilhante opaca acompanhando o novo tamanho
+                cv2.rectangle(frame, (150, 150), (LARGURA_TELA - 150, ALTURA_TELA - 100), COR_RECONHECIDO, 2)
+                
+                cv2.putText(frame, "MODO SERVIDOR", (320, 220), cv2.FONT_HERSHEY_SIMPLEX, 1.5, COR_RECONHECIDO, 2)
+                cv2.putText(frame, f"Servidor ativo em: {meu_ip}:5000", (220, 300), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 255), 2)
+                cv2.putText(frame, "- Relatorio Logs: /api/relatorio", (220, 370), cv2.FONT_HERSHEY_SIMPLEX, 0.8, COR_TEXTO, 2)
+                cv2.putText(frame, "- API Cadastro:   /api/cadastrar_direto", (220, 420), cv2.FONT_HERSHEY_SIMPLEX, 0.8, COR_TEXTO, 2)
+                
+                # Texto centralizado dentro da caixa e na cor BRANCA (255, 255, 255)
+                cv2.putText(frame, "[ESC] VOLTAR", (430, 470), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+                
             cv2.imshow("Totem", frame)
             with lock:
                 frame_atual = frame.copy()
 
             key = cv2.waitKey(1) & 0xFF
             if estado_atual == MODO_CAPTURANDO:
-                if key == 13:
+                if key == 13: # ENTER
                     if buffer_fotos_novas and nome_novo_cadastro:
+                        cv2.rectangle(frame, (0, 0), (LARGURA_TELA, ALTURA_TELA), (20, 20, 20), -1)
+                        cv2.putText(frame, "PROCESSANDO BIOMETRIA...", (200, ALTURA_TELA // 2), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 0), 3)
+                        cv2.putText(frame, "Aplicando Criptografia e salvando no banco. Aguarde...", (150, (ALTURA_TELA // 2) + 60), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+
+                        cv2.imshow("Totem", frame)
+                        cv2.waitKey(100) 
+
                         treinar_novas_fotos(nome_novo_cadastro, buffer_fotos_novas)
                         estado_atual = MODO_RECONHECIMENTO
-                elif key == 27:
+                elif key == 27: # ESC
                     estado_atual = MODO_RECONHECIMENTO
-                elif key == 32:
+                elif key == 43: # TECLA [+] PARA TIRAR FOTO
                     buffer_fotos_novas.append(frame_cru.copy())
-                elif key == 8:
+                elif key == 32: # TECLA [ESPAÇO] AGORA ADICIONA ESPAÇO NO NOME
+                    nome_novo_cadastro += " "
+                elif key == 8: # BACKSPACE
                     nome_novo_cadastro = nome_novo_cadastro[:-1]
-                elif 32 <= key <= 126:
+                elif 33 <= key <= 126: # LETRAS E NÚMEROS
                     nome_novo_cadastro += chr(key)
 
             if key == 9:
