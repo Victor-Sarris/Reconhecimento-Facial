@@ -17,22 +17,57 @@ from datetime import datetime, timedelta, timezone
 from flask import Flask, Response, jsonify, request
 from cryptography.fernet import Fernet
 
+# Tenta importar o módulo do Laser (Labrador/Raspberry). Se não achar (Desktop), não quebra o código.
+try:
+    sys.path.append("./VL53L0X_rasp_python/python")
+    import VL53L0X
+    SENSOR_DISPONIVEL = True
+except ImportError:
+    print("[AVISO] Biblioteca VL53L0X não encontrada. Modo Desktop (sem laser) ativado.")
+    SENSOR_DISPONIVEL = False
+
+# ==============================================================================
+# GESTÃO AUTOMÁTICA DE CHAVES (Não precisa mais passar via terminal)
+# ==============================================================================
+ARQUIVO_CHAVES = ".env"
+
+def carregar_ou_gerar_chaves():
+    if not os.path.exists(ARQUIVO_CHAVES):
+        # Gera chaves perfeitas se não existirem
+        nova_fernet = Fernet.generate_key().decode()
+        nova_jwt = hashlib.sha256(os.urandom(32)).hexdigest()
+        
+        with open(ARQUIVO_CHAVES, "w") as f:
+            f.write(f"CHAVE_BIOMETRIA={nova_fernet}\n")
+            f.write(f"CHAVE_JWT={nova_jwt}\n")
+        print("\n[SEGURANÇA LGPD] Chaves MESTRAS geradas e guardadas em '.env'!")
+    
+    chaves = {}
+    with open(ARQUIVO_CHAVES, "r") as f:
+        for linha in f:
+            if "=" in linha:
+                k, v = linha.strip().split("=", 1)
+                chaves[k] = v
+                
+    return chaves.get("CHAVE_BIOMETRIA"), chaves.get("CHAVE_JWT")
+
+CHAVE_SESSAO, CHAVE_JWT = carregar_ou_gerar_chaves()
+fernet_cipher = Fernet(CHAVE_SESSAO.encode())
+
+# ==============================================================================
 # CONFIGURAÇÕES PRINCIPAIS
+# ==============================================================================
 ARQUIVO_DADOS = "encodings.pickle"
 BANCO_DADOS = "totem_banco.db"
-URL_CAMERA =  0 # camera do meu celular-> "http://192.168.1.40:4747/video"
+URL_CAMERA =  "http://192.168.18.159/stream" # Coloque o IP do Droidcam ou da Câmera IP
 INTERVALO_SCAN_IA = 4.0
-# Adicione junto às outras variáveis globais partilhadas da IA
-ultimo_nome_reconhecido = None  # Guarda o nome da última pessoa que gerou um log válido
 DELAY_RECONHECIMENTO = 5.0
 
 LARGURA_TELA = 1024
 ALTURA_TELA = 600
 
-COR_BARRA_FUNDO = (180, 0, 0)
-COR_BTN_FUNDO = (20, 20, 20)
-COR_TEXTO = (255, 255, 255)
 COR_RECONHECIDO = (0, 255, 0)
+COR_TEXTO = (255, 255, 255)
 
 MODO_RECONHECIMENTO = 0
 MODO_CAPTURANDO = 1
@@ -42,85 +77,110 @@ estado_atual = MODO_RECONHECIMENTO
 
 app = Flask(__name__)
 lock = threading.Lock()
+
+# Variáveis globais para a UI
 frame_atual = None
 lista_encodings = []
 lista_nomes = []
 nome_novo_cadastro = ""
 buffer_fotos_novas = []
 
-# VARIÁVEIS GLOBAIS PARTILHADAS PARA A THREAD DA IA
+# Variáveis partilhadas para a Thread da IA
 ia_processando = False
 caixas_detectadas = []
 nomes_detectados = []
 ultimo_sucesso = 0
 nome_detectado = ""
+ultimo_nome_reconhecido = None 
 
-# MODULO A LASER (VL53L0X)
-DISTANCIA_GATILHO_MM = 800  # 80 centímetros
-pessoa_na_frente = True
+# Módulo Laser
+DISTANCIA_GATILHO_MM = 800
+# Se o sensor não existir (Desktop), assume que sempre tem alguém na frente para poder testar.
+pessoa_na_frente = not SENSOR_DISPONIVEL 
 
-CHAVE_JWT = os.environ.get("CHAVE_JWT", "chave-secreta-jwt-temporaria")
-
-def gerar_token_acesso(usuario_id, nome):
-    """Gera um JWT assinado para o sistema central da clínica."""
-    
-    # Captura a hora exata atual com o fuso horário UTC (Padrão moderno)
-    agora = datetime.now(timezone.utc)
-    
-    payload = {
-        "sub": usuario_id,                # ID do utente no banco de dados
-        "nome": nome,                     # Nome do utente
-        "nivel_acesso": "Paciente",       # Nível de permissão
-        "iat": agora,                     # Emitido em (Issued At)
-        "exp": agora + timedelta(hours=2), # Expira em 2 horas
-        "iss": "Totem_Recepcao_Labrador"  # Emissor (Issuer)
-    }
-    
-    # Assina o token com o algoritmo HS256 e a nossa chave secreta
-    token = jwt.encode(payload, CHAVE_JWT, algorithm="HS256")
-    return token
-
-
-# O Python busca a chave direto da memória do Sistema Operacional (Windows ou Linux)
-CHAVE_SESSAO = os.environ.get("CHAVE_BIOMETRIA")
-
-if not CHAVE_SESSAO:
-    print("[ERRO CRÍTICO LGPD] Variável de ambiente CHAVE_BIOMETRIA não encontrada no sistema!")
-    print("O Totem não pode iniciar sem a chave de segurança. Encerrando...")
-    sys.exit(1) # Interrompe o programa por segurança
-
-# Como a variável de ambiente vem como texto (string), usamos .encode() para transformar em bytes
-fernet_cipher = Fernet(CHAVE_SESSAO.encode())
-
+# ==============================================================================
+# SEGURANÇA E MATEMÁTICA LGPD
+# ==============================================================================
 ARQUIVO_MATRIZ = "matriz_projecao.npy"
 
 def carregar_ou_gerar_matriz_ortogonal(dimensao=128):
-    """
-    Gera uma matriz ortogonal secreta para aplicar o Bio-hashing.
-    Preserva a distância euclidiana, essencial para o face_recognition.
-    """
     if os.path.exists(ARQUIVO_MATRIZ):
         return np.load(ARQUIVO_MATRIZ)
     else:
-        # 1. Cria uma matriz aleatória 128x128
         H = np.random.randn(dimensao, dimensao)
-        # 2. Aplica a decomposição QR para extrair a matriz ortogonal (Q)
         Q, R = np.linalg.qr(H)
-        
-        # 3. Salva a matriz no disco (No futuro da clínica, isso virá da API)
         np.save(ARQUIVO_MATRIZ, Q)
         print("[SEGURANÇA LGPD] Nova Matriz Ortogonal de Bio-hashing gerada!")
         return Q
 
-# Carrega a matriz para a memória RAM
 MATRIZ_PROJECAO = carregar_ou_gerar_matriz_ortogonal(128)
 
 def ofuscar_nome(nome_real):
-    """Aplica hashing SHA-256 ao nome para anonimização na Base de Dados (LGPD)."""
-    # Adicionamos um "salt" (texto extra) para dificultar ataques de dicionário
     texto_para_hash = f"CLINICA_TCC_{nome_real}"
     return hashlib.sha256(texto_para_hash.encode()).hexdigest()
 
+def gerar_token_acesso(usuario_id, nome):
+    agora = datetime.now(timezone.utc)
+    payload = {
+        "sub": usuario_id,
+        "nome": nome,
+        "nivel_acesso": "Paciente",
+        "iat": agora,
+        "exp": agora + timedelta(hours=2),
+        "iss": "Totem_Recepcao_Labrador"
+    }
+    return jwt.encode(payload, CHAVE_JWT, algorithm="HS256")
+
+# ==============================================================================
+# HARDWARE E SENSORES (O RETORNO)
+# ==============================================================================
+def thread_sensor_distancia():
+    global pessoa_na_frente
+    if not SENSOR_DISPONIVEL:
+        return
+
+    try:
+        sensor = VL53L0X.VL53L0X(address=0x29)
+        sensor.start_ranging(VL53L0X.VL53L0X_BETTER_ACCURACY_MODE)
+        print("[SENSOR] Laser VL53L0X Inicializado!")
+    except Exception as e:
+        print(f"[ERRO I2C] Falha fatal: {e}. Desativando trava do laser.")
+        pessoa_na_frente = True
+        return
+
+    falhas = 0
+    while True:
+        try:
+            dist = sensor.get_distance()
+            if dist > 0:
+                falhas = 0
+                if 20 < dist < DISTANCIA_GATILHO_MM:
+                    pessoa_na_frente = True
+                else:
+                    pessoa_na_frente = False
+            else:
+                falhas += 1
+                pessoa_na_frente = False
+
+            # Watchdog de reinicialização
+            if falhas >= 3:
+                try:
+                    sensor.stop_ranging()
+                    time.sleep(0.5)
+                    sensor.start_ranging(VL53L0X.VL53L0X_BETTER_ACCURACY_MODE)
+                except: pass
+                falhas = 0
+            time.sleep(0.2)
+        except:
+            time.sleep(0.5)
+
+def ler_temperatura():
+    try:
+        with open("/sys/class/thermal/thermal_zone0/temp", "r") as f:
+            temp = float(f.read()) / 1000.0
+        return round(temp, 1)
+    except:
+        return 0.0
 
 def obter_ip_local():
     try:
@@ -132,104 +192,73 @@ def obter_ip_local():
     except Exception:
         return "127.0.0.1"
 
-
-# CRIAÇÃO DO BANCO DE DADOS
+# ==============================================================================
+# BANCO DE DADOS
+# ==============================================================================
 def iniciar_banco():
     conn = sqlite3.connect(BANCO_DADOS)
     c = conn.cursor()
-
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS Usuarios (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            nome TEXT UNIQUE,
-            data_cadastro DATETIME,
-            nivel_acesso TEXT
-        )
-    """)
-
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS Logs_Acesso (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            usuario_id INTEGER,
-            data_hora DATETIME,
-            confianca_reconhecimento REAL,
-            foto_momento TEXT,
-            FOREIGN KEY(usuario_id) REFERENCES Usuarios(id)
-        )
-    """)
-
-    try:
-        c.execute("ALTER TABLE Logs_Acesso ADD COLUMN status_acesso TEXT DEFAULT 'LIBERADO'")
-        c.execute("ALTER TABLE Logs_Acesso ADD COLUMN tempo_inferencia_ms INTEGER DEFAULT 0")
-        c.execute("ALTER TABLE Logs_Acesso ADD COLUMN hardware_temp_c REAL DEFAULT 0.0")
-    except sqlite3.OperationalError:
-        pass
-
+    c.execute("""CREATE TABLE IF NOT EXISTS Usuarios (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    nome TEXT UNIQUE, data_cadastro DATETIME, nivel_acesso TEXT)""")
+    c.execute("""CREATE TABLE IF NOT EXISTS Logs_Acesso (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    usuario_id INTEGER, data_hora DATETIME, confianca_reconhecimento REAL,
+                    foto_momento TEXT, status_acesso TEXT DEFAULT 'LIBERADO',
+                    tempo_inferencia_ms INTEGER DEFAULT 0, hardware_temp_c REAL DEFAULT 0.0,
+                    FOREIGN KEY(usuario_id) REFERENCES Usuarios(id))""")
     conn.commit()
     conn.close()
-    print("[BANCO] Banco de Dados Inicializado com Sucesso.")
 
-
-def cadastrar_usuario_db(nome, nivel="Aluno"):
+def cadastrar_usuario_db(nome):
     conn = sqlite3.connect(BANCO_DADOS)
     c = conn.cursor()
-    
-    # Transformamos o nome num hash gigante e irreversível
     nome_ofuscado = ofuscar_nome(nome)
-    
     try:
-        c.execute(
-            "INSERT INTO Usuarios (nome, data_cadastro, nivel_acesso) VALUES (?, ?, ?)",
-            (nome_ofuscado, datetime.now(), nivel),
-        )
+        c.execute("INSERT INTO Usuarios (nome, data_cadastro, nivel_acesso) VALUES (?, ?, ?)",
+                  (nome_ofuscado, datetime.now(), "Aluno"))
         conn.commit()
-        print(f"[BANCO] Usuário registado no banco com Pseudónimo de Segurança.")
     except sqlite3.IntegrityError:
-        print(f"[BANCO] Usuário já existe no banco.")
+        pass
     finally:
         conn.close()
-
 
 def registrar_acesso_db(nome, confianca, frame_capturado, tempo_ms):
     conn = sqlite3.connect(BANCO_DADOS)
     c = conn.cursor()
-
-    # Aplica o hash para fazer a pesquisa de forma anónima
     nome_ofuscado = ofuscar_nome(nome)
-
+    
     c.execute("SELECT id FROM Usuarios WHERE nome = ?", (nome_ofuscado,))
     row = c.fetchone()
-
+    
     if not row:
-        c.execute(
-            "INSERT INTO Usuarios (nome, data_cadastro, nivel_acesso) VALUES (?, ?, ?)",
-            (nome_ofuscado, datetime.now(), "Migrado do Sistema Antigo"),
-        )
+        c.execute("INSERT INTO Usuarios (nome, data_cadastro, nivel_acesso) VALUES (?, ?, ?)",
+                  (nome_ofuscado, datetime.now(), "Migrado"))
         conn.commit()
         user_id = c.lastrowid
     else:
         user_id = row[0]
 
     agora_dt = datetime.now()
+    temp_c = ler_temperatura()
 
-    c.execute(
-        """
-        INSERT INTO Logs_Acesso (usuario_id, data_hora, confianca_reconhecimento, foto_momento, status_acesso, tempo_inferencia_ms)
-        VALUES (?, ?, ?, ?, ?, ?)
-    """,
-        (user_id, agora_dt, confianca, "FOTO_DESCARTADA", "LIBERADO", tempo_ms),
-    )
-
-    conn.commit()
-    print(f"[AUDITORIA] Acesso salvo (ID {user_id}) | Confiança: {confianca}% | Tempo: {tempo_ms}ms")
-    conn.close()
+    c.execute("""INSERT INTO Logs_Acesso (usuario_id, data_hora, confianca_reconhecimento, 
+                 foto_momento, tempo_inferencia_ms, hardware_temp_c) VALUES (?, ?, ?, ?, ?, ?)""",
+              (user_id, agora_dt, confianca, "FOTO_DESCARTADA", tempo_ms, temp_c))
     
+    conn.commit()
+    print(f"[AUDITORIA] Acesso salvo | Confiança: {confianca}% | Temp: {temp_c}ºC")
+    conn.close()
     return user_id
 
-# VÍDEO STREAM
+# ==============================================================================
+# VÍDEO STREAM (ROBUSTO CONTRA QUEDAS - REQUESTS)
+# ==============================================================================
 class VideoStream:
-    def __init__(self, src=0):
-        self.stream = cv2.VideoCapture(src)
+    def __init__(self, src):
+        self.src = src
+        self.stream = None
+        self.bytes_buffer = bytes()
         self.ultimo_frame = None
         self.rodando = False
         self.lock = threading.Lock()
@@ -243,12 +272,26 @@ class VideoStream:
 
     def update(self):
         while self.rodando:
-            ret, frame = self.stream.read()
-            if ret:
-                with self.lock:
-                    self.ultimo_frame = frame
-            else:
-                time.sleep(0.1)
+            try:
+                if self.stream is None:
+                    self.stream = requests.get(self.src, stream=True, timeout=5)
+
+                for chunk in self.stream.iter_content(chunk_size=4096):
+                    if not self.rodando:
+                        break
+                    self.bytes_buffer += chunk
+                    a = self.bytes_buffer.find(b"\xff\xd8")
+                    b = self.bytes_buffer.find(b"\xff\xd9")
+                    if a != -1 and b != -1:
+                        jpg = self.bytes_buffer[a : b + 2]
+                        self.bytes_buffer = self.bytes_buffer[b + 2 :]
+                        img = cv2.imdecode(np.frombuffer(jpg, dtype=np.uint8), cv2.IMREAD_COLOR)
+                        with self.lock:
+                            self.ultimo_frame = img
+            except Exception:
+                self.stream = None
+                self.bytes_buffer = bytes()
+                time.sleep(2)
 
     def read(self):
         with self.lock:
@@ -256,56 +299,39 @@ class VideoStream:
                 return self.ultimo_frame.copy()
             return None
 
+    def stop(self):
+        self.rodando = False
 
-# FUNÇÕES DE DADOS (PICKLE + DB)
+# ==============================================================================
+# GESTÃO DA BIOMETRIA (PICKLE + FERNET)
+# ==============================================================================
 def carregar_dados():
     global lista_encodings, lista_nomes
     try:
-        # 1. Lê os bytes criptografados do disco
         with open(ARQUIVO_DADOS, "rb") as f:
             dados_cifrados = f.read()
-            
-        # 2. Descriptografar de volta para bytes legíveis usando a chave
         dados_em_bytes = fernet_cipher.decrypt(dados_cifrados)
-        
-        # 3. Desserializar: Reconstrói o dicionário na memória RAM (usa-se loads e não load)
         data = pickle.loads(dados_em_bytes)
-        
         lista_encodings = data["encodings"]
         lista_nomes = data["names"]
-        print(f"[IA] Carregados {len(lista_nomes)} vetores faciais descriptografados com sucesso.")
-        
     except FileNotFoundError:
-        lista_encodings = []
-        lista_nomes = []
-        print("[IA] Banco biométrico não encontrado. Iniciando vazio.")
+        lista_encodings, lista_nomes = [], []
     except Exception as e:
-        # Se a chave for diferente, o Fernet dispara o erro: cryptography.fernet.InvalidToken
-        print(f"[ERRO CRÍTICO LGPD] Falha de Segurança ao abrir a biometria: {e}")
-        lista_encodings = []
-        lista_nomes = []
-
+        print(f"[ERRO CRÍTICO LGPD] Falha na biometria: {e}")
+        lista_encodings, lista_nomes = [], []
 
 def salvar_dados():
     global lista_encodings, lista_nomes
     data = {"encodings": lista_encodings, "names": lista_nomes}
-    
-    # 1. Serializar: Transforma o dicionário em bytes puros na memória RAM
     dados_em_bytes = pickle.dumps(data)
-    
-    # 2. Criptografar: O Fernet embaralha os bytes usando AES-128 (CBC/HMAC)
     dados_cifrados = fernet_cipher.encrypt(dados_em_bytes)
-    
-    # 3. Guardar no disco: O ficheiro final fica completamente ilegível
     with open(ARQUIVO_DADOS, "wb") as f:
         f.write(dados_cifrados)
-
 
 def treinar_novas_fotos(nome, lista_fotos):
     global lista_encodings, lista_nomes
     rostos_extraidos = 0
 
-    # Não criamos pastas, operamos direto na memória RAM
     for img in lista_fotos:
         rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         boxes = face_recognition.face_locations(rgb, model="hog")
@@ -313,68 +339,22 @@ def treinar_novas_fotos(nome, lista_fotos):
         
         for enc in encs:
             with lock:
-                # BIO-HASHING: Multiplica o vetor original (128,) pela Matriz (128x128)
-                # O resultado é um vetor totalmente distorcido, mas seguro.
                 enc_cancelavel = np.dot(enc, MATRIZ_PROJECAO)
-                
                 lista_encodings.append(enc_cancelavel)
                 lista_nomes.append(nome)
                 rostos_extraidos += 1
     
-    # Validação de Segurança e Feedback
     if rostos_extraidos > 0:
-        # Só cadastra no banco e salva o pickle se a IA capturou o rosto
         cadastrar_usuario_db(nome)
         salvar_dados()
-        print(f"[IA] Sucesso! {rostos_extraidos} vetor(es) biométrico(s) salvo(s) para '{nome}'.")
-    else:
-        print(f"[ERRO IA] Rosto não detectado nas fotos de '{nome}'. Nenhuma biometria salva. Tente novamente com melhor iluminação.")
+        print(f"[IA] {rostos_extraidos} vetores salvos para '{nome}'.")
 
-
-# INTERFACE & CLIQUES
-def desenhar_interface(frame):
-    # 1. Cria a camada invisível para o efeito HUD
-    overlay = frame.copy()
-    
-    # 2. Desenha as formas sólidas no overlay
-    cv2.rectangle(overlay, (0, ALTURA_TELA - 100), (LARGURA_TELA, ALTURA_TELA), (30, 30, 30), -1) # Barra preta
-    cv2.rectangle(overlay, (50, ALTURA_TELA - 80), (300, ALTURA_TELA - 20), (100, 0, 0), -1)    # Botão 1 azul escuro
-    cv2.rectangle(overlay, (350, ALTURA_TELA - 80), (600, ALTURA_TELA - 20), (100, 0, 0), -1)   # Botão 2 azul escuro
-
-    # 3. Aplica a transparência: 60% overlay, 40% vídeo original
-    alpha = 0.6
-    cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0, frame)
-
-    # 4. Desenha as bordas e os textos OPACOS (por cima do efeito)
-    cv2.rectangle(frame, (50, ALTURA_TELA - 80), (300, ALTURA_TELA - 20), (255, 255, 255), 1)
-    cv2.putText(frame, "Capturar Rosto", (90, ALTURA_TELA - 40), cv2.FONT_HERSHEY_SIMPLEX, 0.8, COR_TEXTO, 2)
-
-    cv2.rectangle(frame, (350, ALTURA_TELA - 80), (600, ALTURA_TELA - 20), (255, 255, 255), 1)
-    cv2.putText(frame, "Modo Servidor", (390, ALTURA_TELA - 40), cv2.FONT_HERSHEY_SIMPLEX, 0.8, COR_TEXTO, 2)
-
-
-def gerenciar_cliques(event, x, y, flags, param):
-    global estado_atual, nome_novo_cadastro, buffer_fotos_novas
-    y_min = ALTURA_TELA - 80
-    y_max = ALTURA_TELA - 20
-
-    if event == cv2.EVENT_LBUTTONDOWN:
-        if estado_atual == MODO_RECONHECIMENTO:
-            if y_min < y < y_max:
-                if 50 < x < 300:
-                    estado_atual = MODO_CAPTURANDO
-                    nome_novo_cadastro = ""
-                    buffer_fotos_novas = []
-                elif 350 < x < 600:
-                    estado_atual = MODO_INFO_REMOTO
-        elif y < (ALTURA_TELA - 100):
-            estado_atual = MODO_RECONHECIMENTO
-
-
-# FUNÇÃO QUE COMPUTA A IA EM BACKGROUND (THREAD PARALELA)
+# ==============================================================================
+# THREAD DA IA (ASSÍNCRONA)
+# ==============================================================================
 def processar_ia_async(frame_ia, frame_cru_ia):
     global ia_processando, caixas_detectadas, nomes_detectados, ultimo_sucesso, nome_detectado
-    global ultimo_nome_reconhecido  # Permite ler e alterar a memória de estado do Totem
+    global ultimo_nome_reconhecido
     
     try:
         inicio_inferencia = time.time()
@@ -382,10 +362,8 @@ def processar_ia_async(frame_ia, frame_cru_ia):
 
         small = cv2.resize(frame_ia, (0, 0), fx=0.25, fy=0.25)
         rgb_small = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
-
         locs_small = face_recognition.face_locations(rgb_small)
         
-        # GATILHO 1: Se a tela estiver completamente vazia, limpa o estado de memória
         if not locs_small:
             with lock:
                 ultimo_nome_reconhecido = None
@@ -407,31 +385,22 @@ def processar_ia_async(frame_ia, frame_cru_ia):
                 face_distances = face_recognition.face_distance(lista_encodings, enc_cancelavel)
                 if len(face_distances) > 0:
                     best_match_index = np.argmin(face_distances)
-                    distancia_minima = face_distances[best_match_index]
-
-                    if distancia_minima < 0.45:
+                    if face_distances[best_match_index] < 0.45:
                         name = lista_nomes[best_match_index]
 
-            # GATILHO 2: Verificação e Controle de Duplicação de Log
             with lock:
                 if name == "Desconhecido":
                     ultimo_sucesso = agora
                     nome_detectado = name
-                    ultimo_nome_reconhecido = None # Reseta a memória para forçar a IA a avaliar novamente no próximo ciclo
+                    ultimo_nome_reconhecido = None
                 else:
                     if name != ultimo_nome_reconhecido:
-                        tempo_inferencia_ms = int((time.time() - inicio_inferencia) * 1000)
-                        confianca_pct = round((1.0 - distancia_minima) * 100, 2) if len(face_distances) > 0 else 0.0
+                        tempo_ms = int((time.time() - inicio_inferencia) * 1000)
+                        confianca_pct = round((1.0 - face_distances[best_match_index]) * 100, 2) if len(face_distances) > 0 else 0.0
                         
-                        # 1. Regista o acesso
-                        id_paciente = registrar_acesso_db(name, confianca_pct, frame_cru_ia.copy(), tempo_inferencia_ms)
+                        id_pac = registrar_acesso_db(name, confianca_pct, frame_cru_ia.copy(), tempo_ms)
+                        token_jwt = gerar_token_acesso(id_pac, name)
                         
-                        # 2. EMISSÃO DO TOKEN
-                        token_jwt = gerar_token_acesso(id_paciente, name)
-                        print(f"\n[REDE] 🔒 Autenticação concluída. Face destruída.")
-                        print(f"[REDE] 🚀 Token JWT gerado.\n")
-                        
-                        # Atualiza a memória de sucesso
                         ultimo_nome_reconhecido = name  
                         ultimo_sucesso = agora
                         nome_detectado = name
@@ -443,11 +412,43 @@ def processar_ia_async(frame_ia, frame_cru_ia):
             nomes_detectados = novos_nomes
 
     except Exception as e:
-        print(f"[ERRO THREAD IA] {e}")
+        print(f"[ERRO IA] {e}")
     finally:
         ia_processando = False
 
-# LOOP PRINCIPAL (THREAD PRINCIPAL - FOCO EM FLUIDEZ VISUAL)
+# ==============================================================================
+# UI E CLIQUES
+# ==============================================================================
+def desenhar_interface(frame):
+    overlay = frame.copy()
+    cv2.rectangle(overlay, (0, ALTURA_TELA - 100), (LARGURA_TELA, ALTURA_TELA), (30, 30, 30), -1) 
+    cv2.rectangle(overlay, (50, ALTURA_TELA - 80), (300, ALTURA_TELA - 20), (100, 0, 0), -1)    
+    cv2.rectangle(overlay, (350, ALTURA_TELA - 80), (600, ALTURA_TELA - 20), (100, 0, 0), -1)   
+    
+    cv2.addWeighted(overlay, 0.6, frame, 0.4, 0, frame)
+
+    cv2.rectangle(frame, (50, ALTURA_TELA - 80), (300, ALTURA_TELA - 20), COR_TEXTO, 1)
+    cv2.putText(frame, "Capturar Rosto", (90, ALTURA_TELA - 40), cv2.FONT_HERSHEY_SIMPLEX, 0.8, COR_TEXTO, 2)
+    cv2.rectangle(frame, (350, ALTURA_TELA - 80), (600, ALTURA_TELA - 20), COR_TEXTO, 1)
+    cv2.putText(frame, "Modo Servidor", (390, ALTURA_TELA - 40), cv2.FONT_HERSHEY_SIMPLEX, 0.8, COR_TEXTO, 2)
+
+def gerenciar_cliques(event, x, y, flags, param):
+    global estado_atual, nome_novo_cadastro, buffer_fotos_novas
+    if event == cv2.EVENT_LBUTTONDOWN:
+        if estado_atual == MODO_RECONHECIMENTO:
+            if (ALTURA_TELA - 80) < y < (ALTURA_TELA - 20):
+                if 50 < x < 300:
+                    estado_atual = MODO_CAPTURANDO
+                    nome_novo_cadastro = ""
+                    buffer_fotos_novas = []
+                elif 350 < x < 600:
+                    estado_atual = MODO_INFO_REMOTO
+        elif y < (ALTURA_TELA - 100):
+            estado_atual = MODO_RECONHECIMENTO
+
+# ==============================================================================
+# LOOP PRINCIPAL DO TOTEM
+# ==============================================================================
 def loop_principal():
     global frame_atual, estado_atual, nome_novo_cadastro, buffer_fotos_novas
     global ia_processando, caixas_detectadas, nomes_detectados, ultimo_sucesso, nome_detectado
@@ -457,183 +458,123 @@ def loop_principal():
 
     cv2.namedWindow("Totem", cv2.WINDOW_NORMAL)
     cv2.setMouseCallback("Totem", gerenciar_cliques)
-
     cv2.resizeWindow("Totem", LARGURA_TELA, ALTURA_TELA)
-    cv2.moveWindow("Totem", 0, 0)
     cv2.setWindowProperty("Totem", cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
 
     ultimo_ia = 0
     meu_ip = obter_ip_local()
 
     while True:
-        try:
-            frame_cru = stream.read()
-            if frame_cru is None:
-                time.sleep(0.01)
-                continue
-
-            frame = cv2.resize(frame_cru, (LARGURA_TELA, ALTURA_TELA))
-
-            if estado_atual == MODO_RECONHECIMENTO:
-                desenhar_interface(frame)
-
-                agora = time.time()
-                if pessoa_na_frente:
-                    # Verifica o temporizador e se não há nenhuma análise ativa em background
-                    if not ia_processando and (agora - ultimo_ia) > INTERVALO_SCAN_IA:
-                        ultimo_ia = agora
-                        ia_processando = True
-                        
-                        # Dispara a thread secundária para computar a IA de forma assíncrona
-                        t_ia = threading.Thread(
-                            target=processar_ia_async, 
-                            args=(frame.copy(), frame_cru.copy())
-                        )
-                        t_ia.daemon = True
-                        t_ia.start()
-
-                    # Faz uma cópia rápida sob proteção do lock para renderizar as caixas na tela
-                    with lock:
-                        caixas_locais = caixas_detectadas.copy()
-                        nomes_locais = nomes_detectados.copy()
-
-                    for (top, right, bottom, left), name in zip(caixas_locais, nomes_locais):
-                        top *= 4
-                        right *= 4
-                        bottom *= 4
-                        left *= 4
-                        cor = COR_RECONHECIDO if name != "Desconhecido" else (0, 0, 255)
-                        cv2.rectangle(frame, (left, top), (right, bottom), cor, 2)
-                        cv2.rectangle(frame, (left, bottom - 35), (right, bottom), cor, cv2.FILLED)
-                        cv2.putText(
-                            frame,
-                            name,
-                            (left + 6, bottom - 6),
-                            cv2.FONT_HERSHEY_SIMPLEX,
-                            0.8,
-                            (255, 255, 255),
-                            1,
-                        )
-                else:
-                    with lock:
-                        caixas_detectadas = []
-                        nomes_detectados = []
-                    cv2.putText(
-                        frame,
-                        "Aproxime-se do Totem para liberar acesso",
-                        (150, 50),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        1.0,
-                        (0, 255, 255),
-                        2,
-                    )
-
-                if (agora - ultimo_sucesso) < DELAY_RECONHECIMENTO:
-                    tempo_restante = int(DELAY_RECONHECIMENTO - (agora - ultimo_sucesso))
-                    
-                    # Lógica de Cores e Textos Dinâmicos
-                    # Lógica de Cores e Textos Dinâmicos (Design Atualizado, Lógica Antiga)
-                    if nome_detectado == "Desconhecido":
-                        cor_fundo = (0, 0, 200) # Vermelho (Padrão BGR)
-                        texto_principal = "ACESSO NEGADO: Desconhecido"
-                        texto_secundario = f"Aguarde {tempo_restante}s..."
-                    else:
-                        cor_fundo = (0, 200, 0) # Verde (Padrão BGR)
-                        texto_principal = f"ACESSO LIBERADO: {nome_detectado}"
-                        texto_secundario = f"Aguarde {tempo_restante}s..."
-
-                    # Desenha a barra superior
-                    cv2.rectangle(frame, (0, 0), (LARGURA_TELA, 80), cor_fundo, -1)
-                    cv2.putText(frame, texto_principal, (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255, 255, 255), 3)
-                    cv2.putText(frame, texto_secundario, (LARGURA_TELA - 250, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 255, 255), 2)
-
-            elif estado_atual == MODO_CAPTURANDO:
-               # Cria um retângulo escuro translúcido no topo
-                overlay = frame.copy()
-                cv2.rectangle(overlay, (0, 0), (LARGURA_TELA, 170), (0, 0, 0), -1)
-                cv2.addWeighted(overlay, 0.7, frame, 0.3, 0, frame)
-                
-                # Exibe o nome sendo digitado
-                msg_nome = f"NOME: {nome_novo_cadastro}_"
-                cv2.putText(frame, msg_nome, (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.2, COR_TEXTO, 2)
-                
-                # Menu de atalhos
-                info = f"[+] TIRAR FOTO ({len(buffer_fotos_novas)})  |  [ENTER] SALVAR  |  [ESC] VOLTAR"
-                cv2.putText(frame, info, (50, 95), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 2)
-
-                # INSTRUÇÕES DINÂMICAS 
-                qtd_fotos = len(buffer_fotos_novas)
-                if qtd_fotos == 0:
-                    instrucao = "PASSO 1: Olhe para a frente e aperte [+]"
-                elif qtd_fotos == 1:
-                    instrucao = "PASSO 2: Vire o rosto para a ESQUERDA e aperte [+]"
-                elif qtd_fotos == 2:
-                    instrucao = "PASSO 3: Vire o rosto para a DIREITA e aperte [+]"
-                elif qtd_fotos == 3:
-                    instrucao = "PASSO 4: Incline o rosto para CIMA e aperte [+]"
-                elif qtd_fotos == 4:
-                    instrucao = "PASSO 5: Feche os OLHOS e aperte [+]"
-                else:
-                    instrucao = "EXCELENTE! Aperte [ENTER] para salvar."
-                
-                cv2.putText(frame, instrucao, (50, 140), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
-
-            elif estado_atual == MODO_INFO_REMOTO:
-                # Cria um painel central esfumaçado (Esticamos o limite inferior de -150 para -100)
-                overlay = frame.copy()
-                cv2.rectangle(overlay, (150, 150), (LARGURA_TELA - 150, ALTURA_TELA - 100), (10, 10, 10), -1)
-                cv2.addWeighted(overlay, 0.85, frame, 0.15, 0, frame)
-                
-                # Borda brilhante opaca acompanhando o novo tamanho
-                cv2.rectangle(frame, (150, 150), (LARGURA_TELA - 150, ALTURA_TELA - 100), COR_RECONHECIDO, 2)
-                
-                cv2.putText(frame, "MODO SERVIDOR", (320, 220), cv2.FONT_HERSHEY_SIMPLEX, 1.5, COR_RECONHECIDO, 2)
-                cv2.putText(frame, f"Servidor ativo em: {meu_ip}:5000", (220, 300), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 255), 2)
-                cv2.putText(frame, "- Relatorio Logs: /api/relatorio", (220, 370), cv2.FONT_HERSHEY_SIMPLEX, 0.8, COR_TEXTO, 2)
-                cv2.putText(frame, "- API Cadastro:   /api/cadastrar_direto", (220, 420), cv2.FONT_HERSHEY_SIMPLEX, 0.8, COR_TEXTO, 2)
-                
-                # Texto centralizado dentro da caixa e na cor BRANCA (255, 255, 255)
-                cv2.putText(frame, "[ESC] VOLTAR", (430, 470), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-                
-            cv2.imshow("Totem", frame)
-            with lock:
-                frame_atual = frame.copy()
-
-            key = cv2.waitKey(1) & 0xFF
-            if estado_atual == MODO_CAPTURANDO:
-                if key == 13: # ENTER
-                    if buffer_fotos_novas and nome_novo_cadastro:
-                        cv2.rectangle(frame, (0, 0), (LARGURA_TELA, ALTURA_TELA), (20, 20, 20), -1)
-                        cv2.putText(frame, "PROCESSANDO BIOMETRIA...", (200, ALTURA_TELA // 2), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 0), 3)
-                        cv2.putText(frame, "Aplicando Criptografia e salvando no banco. Aguarde...", (150, (ALTURA_TELA // 2) + 60), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
-
-                        cv2.imshow("Totem", frame)
-                        cv2.waitKey(100) 
-
-                        treinar_novas_fotos(nome_novo_cadastro, buffer_fotos_novas)
-                        estado_atual = MODO_RECONHECIMENTO
-                elif key == 27: # ESC
-                    estado_atual = MODO_RECONHECIMENTO
-                elif key == 43: # TECLA [+] PARA TIRAR FOTO
-                    buffer_fotos_novas.append(frame_cru.copy())
-                elif key == 32: # TECLA [ESPAÇO] AGORA ADICIONA ESPAÇO NO NOME
-                    nome_novo_cadastro += " "
-                elif key == 8: # BACKSPACE
-                    nome_novo_cadastro = nome_novo_cadastro[:-1]
-                elif 33 <= key <= 126: # LETRAS E NÚMEROS
-                    nome_novo_cadastro += chr(key)
-
-            if key == 9:
-                break
-
-        except Exception as e:
+        frame_cru = stream.read()
+        if frame_cru is None:
             time.sleep(0.01)
+            continue
+
+        frame = cv2.resize(frame_cru, (LARGURA_TELA, ALTURA_TELA))
+        agora = time.time()
+
+        if estado_atual == MODO_RECONHECIMENTO:
+            desenhar_interface(frame)
+
+            if pessoa_na_frente:
+                # O bloqueio da IA também respeita a barra de aviso (DELAY_RECONHECIMENTO)
+                if not ia_processando and (agora - ultimo_ia) > INTERVALO_SCAN_IA and (agora - ultimo_sucesso) > DELAY_RECONHECIMENTO:
+                    ultimo_ia = agora
+                    ia_processando = True
+                    
+                    t_ia = threading.Thread(target=processar_ia_async, args=(frame.copy(), frame_cru.copy()))
+                    t_ia.daemon = True
+                    t_ia.start()
+
+                with lock:
+                    caixas_locais = caixas_detectadas.copy()
+                    nomes_locais = nomes_detectados.copy()
+
+                for (top, right, bottom, left), name in zip(caixas_locais, nomes_locais):
+                    top, right, bottom, left = top*4, right*4, bottom*4, left*4
+                    cor = COR_RECONHECIDO if name != "Desconhecido" else (0, 0, 255)
+                    cv2.rectangle(frame, (left, top), (right, bottom), cor, 2)
+                    cv2.rectangle(frame, (left, bottom - 35), (right, bottom), cor, cv2.FILLED)
+                    cv2.putText(frame, name, (left + 6, bottom - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.8, COR_TEXTO, 1)
+            else:
+                with lock:
+                    caixas_detectadas = []
+                    nomes_detectados = []
+                cv2.putText(frame, "Aproxime-se do Totem para liberar acesso", (150, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 255), 2)
+
+            if (agora - ultimo_sucesso) < DELAY_RECONHECIMENTO:
+                tempo_restante = int(DELAY_RECONHECIMENTO - (agora - ultimo_sucesso))
+                
+                if nome_detectado == "Desconhecido":
+                    cor_fundo = (0, 0, 200) 
+                    texto_principal = "ACESSO NEGADO: Desconhecido"
+                else:
+                    cor_fundo = (0, 200, 0)
+                    texto_principal = f"ACESSO LIBERADO: {nome_detectado}"
+
+                cv2.rectangle(frame, (0, 0), (LARGURA_TELA, 80), cor_fundo, -1)
+                cv2.putText(frame, texto_principal, (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.2, COR_TEXTO, 3)
+                # Afastado 250 pixels da borda para não sobrepor o texto principal
+                cv2.putText(frame, f"Aguarde {tempo_restante}s...", (LARGURA_TELA - 250, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.9, COR_TEXTO, 2)
+
+        elif estado_atual == MODO_CAPTURANDO:
+            overlay = frame.copy()
+            cv2.rectangle(overlay, (0, 0), (LARGURA_TELA, 170), (0, 0, 0), -1)
+            cv2.addWeighted(overlay, 0.7, frame, 0.3, 0, frame)
+            
+            cv2.putText(frame, f"NOME: {nome_novo_cadastro}_", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.2, COR_TEXTO, 2)
+            cv2.putText(frame, f"[+] TIRAR FOTO ({len(buffer_fotos_novas)})  |  [ENTER] SALVAR  |  [ESC] VOLTAR", (50, 95), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 2)
+
+            qtd = len(buffer_fotos_novas)
+            inst = "PASSO 1: Olhe para a frente e aperte [+]" if qtd == 0 else \
+                   "PASSO 2: Vire o rosto para a ESQUERDA e aperte [+]" if qtd == 1 else \
+                   "PASSO 3: Vire o rosto para a DIREITA e aperte [+]" if qtd == 2 else \
+                   "PASSO 4: Incline o rosto para CIMA e aperte [+]" if qtd == 3 else \
+                   "PASSO 5: Feche os OLHOS e aperte [+]" if qtd == 4 else \
+                   "EXCELENTE! Aperte [ENTER] para salvar."
+            cv2.putText(frame, inst, (50, 140), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+
+        elif estado_atual == MODO_INFO_REMOTO:
+            overlay = frame.copy()
+            cv2.rectangle(overlay, (150, 150), (LARGURA_TELA - 150, ALTURA_TELA - 100), (10, 10, 10), -1)
+            cv2.addWeighted(overlay, 0.85, frame, 0.15, 0, frame)
+            
+            cv2.rectangle(frame, (150, 150), (LARGURA_TELA - 150, ALTURA_TELA - 100), COR_RECONHECIDO, 2)
+            cv2.putText(frame, "MODO SERVIDOR", (320, 220), cv2.FONT_HERSHEY_SIMPLEX, 1.5, COR_RECONHECIDO, 2)
+            cv2.putText(frame, f"Servidor ativo em: {meu_ip}:5000", (220, 300), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 255), 2)
+            cv2.putText(frame, "- Relatorio Logs: /api/relatorio", (220, 370), cv2.FONT_HERSHEY_SIMPLEX, 0.8, COR_TEXTO, 2)
+            cv2.putText(frame, "- API Cadastro:   /api/cadastrar_direto", (220, 420), cv2.FONT_HERSHEY_SIMPLEX, 0.8, COR_TEXTO, 2)
+            cv2.putText(frame, "[ESC] VOLTAR", (430, 470), cv2.FONT_HERSHEY_SIMPLEX, 0.7, COR_TEXTO, 2)
+            
+        cv2.imshow("Totem", frame)
+        with lock:
+            frame_atual = frame.copy()
+
+        key = cv2.waitKey(1) & 0xFF
+        if estado_atual == MODO_CAPTURANDO:
+            if key == 13: # ENTER
+                if buffer_fotos_novas and nome_novo_cadastro:
+                    cv2.rectangle(frame, (0, 0), (LARGURA_TELA, ALTURA_TELA), (20, 20, 20), -1)
+                    cv2.putText(frame, "PROCESSANDO BIOMETRIA...", (200, ALTURA_TELA // 2), cv2.FONT_HERSHEY_SIMPLEX, 1.2, COR_RECONHECIDO, 3)
+                    cv2.imshow("Totem", frame)
+                    cv2.waitKey(100) 
+                    treinar_novas_fotos(nome_novo_cadastro, buffer_fotos_novas)
+                    estado_atual = MODO_RECONHECIMENTO
+            elif key == 27: estado_atual = MODO_RECONHECIMENTO
+            elif key == 43: buffer_fotos_novas.append(frame_cru.copy())
+            elif key == 32: nome_novo_cadastro += " "
+            elif key == 8: nome_novo_cadastro = nome_novo_cadastro[:-1]
+            elif 33 <= key <= 126: nome_novo_cadastro += chr(key)
+
+        if key == 9: # Pressione TAB para sair
+            break
 
     stream.stop()
     cv2.destroyAllWindows()
 
-
+# ==============================================================================
 # API FLASK
+# ==============================================================================
 @app.route("/api/cadastrar_direto", methods=["POST"])
 def cadastrar_direto():
     global lista_encodings, lista_nomes
@@ -642,87 +583,47 @@ def cadastrar_direto():
 
     file = request.files["foto"]
     name = request.form["nome"]
+    img = cv2.imdecode(np.frombuffer(file.read(), np.uint8), cv2.IMREAD_COLOR)
 
-    file_bytes = np.frombuffer(file.read(), np.uint8)
-    img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
+    if img is None: return jsonify({"erro": "Imagem invalida"}), 400
 
-    if img is None:
-        return jsonify({"erro": "Imagem invalida ou corrompida"}), 400
-
-    altura, largura = img.shape[:2]
-    if largura > 800:
-        proporcao = 800.0 / largura
-        img = cv2.resize(img, (800, int(altura * proporcao)))
-
-    rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    rgb = cv2.cvtColor(cv2.resize(img, (800, int(img.shape[0] * (800.0 / img.shape[1])))), cv2.COLOR_BGR2RGB)
 
     with lock:
         boxes = face_recognition.face_locations(rgb)
         if boxes:
             encs = face_recognition.face_encodings(rgb, boxes, num_jitters=5)
-            if len(encs) > 0:
-                # -------------------------------------------------------------
-                # CORREÇÃO AQUI: Aplica o Bio-Hashing no cadastro remoto também
+            if encs:
                 enc_cancelavel = np.dot(encs[0], MATRIZ_PROJECAO)
-                # -------------------------------------------------------------
-                
                 cadastrar_usuario_db(name)
-                # Guarda o vetor distorcido, e não o bruto
-                lista_encodings.append(enc_cancelavel) 
+                lista_encodings.append(enc_cancelavel)
                 lista_nomes.append(name)
                 salvar_dados()
                 return jsonify({"msg": f"Sucesso! {name} cadastrado."}), 201
 
-    return jsonify({"erro": "Rosto nao encontrado na foto"}), 400
-
-@app.route("/api/relatorio", methods=["GET"])
-def relatorio_acessos():
-    conn = sqlite3.connect(BANCO_DADOS)
-    c = conn.cursor()
-    c.execute("""
-        SELECT u.nome, l.data_hora, l.confianca_reconhecimento, l.foto_momento,
-               l.status_acesso, l.tempo_inferencia_ms
-        FROM Logs_Acesso l
-        JOIN Usuarios u ON l.usuario_id = u.id
-        ORDER BY l.data_hora DESC LIMIT 100
-    """)
-    logs = []
-    for row in c.fetchall():
-        logs.append(
-            {
-                "usuario": row[0],
-                "data_hora": row[1],
-                "confianca_pct": row[2],
-                "status_acesso": row[4] if row[4] else "LIBERADO",
-                "tempo_inferencia_ms": row[5] if row[5] else 0,
-                "foto_caminho": row[3],
-            }
-        )
-    conn.close()
-    return jsonify(logs)
-
+    return jsonify({"erro": "Rosto nao encontrado"}), 400
 
 @app.route("/video_feed")
 def video_feed():
     def gen():
         while True:
             with lock:
-                if frame_atual is None:
-                    time.sleep(0.1)
-                    continue
-                _, enc = cv2.imencode(".jpg", frame_atual)
-            yield (b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + bytearray(enc) + b"\r\n")
-
+                if frame_atual is not None:
+                    _, enc = cv2.imencode(".jpg", frame_atual)
+                    yield (b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + bytearray(enc) + b"\r\n")
+            time.sleep(0.1)
     return Response(gen(), mimetype="multipart/x-mixed-replace; boundary=frame")
-
 
 def rodar_servidor():
     app.run(host="0.0.0.0", port=5000, debug=False, use_reloader=False)
 
-
 if __name__ == "__main__":
     iniciar_banco()
     carregar_dados()
+
+    t_sensor = threading.Thread(target=thread_sensor_distancia)
+    t_sensor.daemon = True
+    t_sensor.start()
 
     t_flask = threading.Thread(target=rodar_servidor)
     t_flask.daemon = True
