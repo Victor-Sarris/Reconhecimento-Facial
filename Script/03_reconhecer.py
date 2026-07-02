@@ -254,9 +254,14 @@ def registrar_acesso_db(nome, confianca, frame_capturado, tempo_ms):
 # ==============================================================================
 # VÍDEO STREAM (ANTI-CONGELAMENTO COM URLLIB)
 # ==============================================================================
+# ==============================================================================
+# VÍDEO STREAM (REQUESTS COM TIMEOUT DUPLO ANTI-CONGELAMENTO)
+# ==============================================================================
 class VideoStream:
     def __init__(self, src):
         self.src = src
+        self.stream = None
+        self.bytes_buffer = bytes()
         self.ultimo_frame = None
         self.rodando = False
         self.lock = threading.Lock()
@@ -269,44 +274,49 @@ class VideoStream:
         return self
 
     def update(self):
-        import urllib.request
+        import requests
         while self.rodando:
             try:
-                # O timeout de 2 segundos aqui atua direto no socket da placa de rede
-                req = urllib.request.urlopen(self.src, timeout=2.0)
-                bytes_buffer = bytes()
-                
-                while self.rodando:
-                    # Lê 1024 bytes por vez. Se a rede travar, o socket estoura o timeout e reinicia.
-                    chunk = req.read(1024)
-                    if not chunk:
-                        break # O ESP32 fechou a conexão
-                        
-                    bytes_buffer += chunk
+                if self.stream is None:
+                    # TIMEOUT DUPLO: (Tempo para Conectar, Tempo Máximo sem receber dados)
+                    # Se a ESP32 gaguejar por 3 segundos, o Requests desiste e reinicia!
+                    self.stream = requests.get(self.src, stream=True, timeout=(3.0, 3.0))
+
+                for chunk in self.stream.iter_content(chunk_size=1024):
+                    if not self.rodando:
+                        break
                     
-                    if len(bytes_buffer) > 51200:
-                        bytes_buffer = bytes()
+                    self.bytes_buffer += chunk
+                    
+                    # Corta o lag brutalmente se acumular bytes demais
+                    if len(self.bytes_buffer) > 51200:
+                        self.bytes_buffer = bytes()
                         continue
 
-                    a = bytes_buffer.find(b"\xff\xd8")
-                    b = bytes_buffer.find(b"\xff\xd9")
+                    a = self.bytes_buffer.find(b"\xff\xd8")
+                    b = self.bytes_buffer.find(b"\xff\xd9")
                     
                     if a != -1 and b != -1:
                         if a < b:
-                            jpg = bytes_buffer[a : b + 2]
-                            bytes_buffer = bytes_buffer[b + 2 :]
+                            jpg = self.bytes_buffer[a : b + 2]
+                            self.bytes_buffer = self.bytes_buffer[b + 2 :]
                             img = cv2.imdecode(np.frombuffer(jpg, dtype=np.uint8), cv2.IMREAD_COLOR)
                             
                             if img is not None:
                                 with self.lock:
                                     self.ultimo_frame = img
                         else:
-                            bytes_buffer = bytes_buffer[a:]
+                            self.bytes_buffer = self.bytes_buffer[a:]
                             
+            except requests.exceptions.Timeout:
+                print("[REDE] A ESP32 engasgou (Timeout). Reiniciando vídeo na marra...")
+                self.stream = None
+                self.bytes_buffer = bytes()
             except Exception as e:
-                # Se der calafrio na rede e travar, ele cai aqui, limpa tudo e reconecta em 0.5s
-                bytes_buffer = bytes()
-                time.sleep(0.5)
+                print(f"[REDE] Queda de conexão. Tentando novamente... Erro: {e}")
+                self.stream = None
+                self.bytes_buffer = bytes()
+                time.sleep(1.0)
 
     def read(self):
         with self.lock:
@@ -316,6 +326,8 @@ class VideoStream:
 
     def stop(self):
         self.rodando = False
+        if self.stream:
+            self.stream.close()
 # ==============================================================================
 # GESTÃO DA BIOMETRIA (PICKLE + FERNET)
 # ==============================================================================
