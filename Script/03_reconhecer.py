@@ -279,16 +279,33 @@ class VideoStream:
                 for chunk in self.stream.iter_content(chunk_size=4096):
                     if not self.rodando:
                         break
+                    
                     self.bytes_buffer += chunk
-                    a = self.bytes_buffer.find(b"\xff\xd8")
-                    b = self.bytes_buffer.find(b"\xff\xd9")
+                    
+                    # PROTEÇÃO 1: Esvazia a represa de dados se acumular muito Lag (> 100 KB)
+                    if len(self.bytes_buffer) > 102400:
+                        self.bytes_buffer = bytes()
+                        continue
+
+                    a = self.bytes_buffer.find(b"\xff\xd8") # Início
+                    b = self.bytes_buffer.find(b"\xff\xd9") # Fim
+                    
                     if a != -1 and b != -1:
-                        jpg = self.bytes_buffer[a : b + 2]
-                        self.bytes_buffer = self.bytes_buffer[b + 2 :]
-                        img = cv2.imdecode(np.frombuffer(jpg, dtype=np.uint8), cv2.IMREAD_COLOR)
-                        with self.lock:
-                            self.ultimo_frame = img
-            except Exception:
+                        # PROTEÇÃO 2: Garante que o Início vem ANTES do Fim
+                        if a < b:
+                            jpg = self.bytes_buffer[a : b + 2]
+                            self.bytes_buffer = self.bytes_buffer[b + 2 :]
+                            img = cv2.imdecode(np.frombuffer(jpg, dtype=np.uint8), cv2.IMREAD_COLOR)
+                            
+                            if img is not None:
+                                with self.lock:
+                                    self.ultimo_frame = img
+                        else:
+                            # Buffer "atropelado" (Fim antes do Início).
+                            # Descarta o lixo e recomeça a ler do novo Início exato.
+                            self.bytes_buffer = self.bytes_buffer[a:]
+                            
+            except Exception as e:
                 self.stream = None
                 self.bytes_buffer = bytes()
                 time.sleep(2)
