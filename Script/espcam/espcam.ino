@@ -7,17 +7,14 @@
 #include "soc/rtc_cntl_reg.h"
 #include "esp_http_server.h" 
 
-// ==========================================
-// 1. Configurações de Rede
-// ==========================================
+// 1. configuracoes de Rede
 const char* ssid = "VIRTEX_A";
 const char* password = "lamar338";
 
 #define PART_BOUNDARY "123456789000000000000987654321"
 
-// ==========================================
+
 // 2. Pinagem (AI THINKER)
-// ==========================================
 #define PWDN_GPIO_NUM     32
 #define RESET_GPIO_NUM    -1
 #define XCLK_GPIO_NUM      0
@@ -42,7 +39,7 @@ static const char* _STREAM_PART = "Content-Type: image/jpeg\r\nContent-Length: %
 
 httpd_handle_t stream_httpd = NULL;
 
-// Função que gera o video contínuo
+// funcao que gera o video contínuo
 static esp_err_t stream_handler(httpd_req_t *req){
   camera_fb_t * fb = NULL;
   esp_err_t res = ESP_OK;
@@ -95,7 +92,6 @@ static esp_err_t stream_handler(httpd_req_t *req){
     if(res != ESP_OK){
       break;
     }
-    delay(50);
   }
   return res;
 }
@@ -146,14 +142,13 @@ void setup() {
   config.xclk_freq_hz = 20000000;
   config.pixel_format = PIXFORMAT_JPEG;
   
-if(psramFound()){
-    // Resolução QVGA (320x240): Pacotes ultra-leves, perfeitos para a IA e Wi-Fi fraco
-    config.frame_size = FRAMESIZE_QVGA; 
-    config.jpeg_quality = 12; // Compressão média/alta
+  if(psramFound()){
+    config.frame_size = FRAMESIZE_VGA;
+    config.jpeg_quality = 10;
     config.fb_count = 2;
   } else {
-    config.frame_size = FRAMESIZE_QVGA;
-    config.jpeg_quality = 15; // Compressão ainda maior se faltar RAM
+    config.frame_size = FRAMESIZE_SVGA;
+    config.jpeg_quality = 12;
     config.fb_count = 1;
   }
   
@@ -162,6 +157,17 @@ if(psramFound()){
     Serial.printf("Camera init failed with error 0x%x", err);
     return;
   }
+
+  // configuracao de ip fixo
+  IPAddress local_IP(192, 168, 18, 159); // O IP fixo para a ESP32
+  IPAddress gateway(192, 168, 18, 1);    // O IP roteador Wi-Fi
+  IPAddress subnet(255, 255, 255, 0);    // Máscara de rede padrão
+  IPAddress primaryDNS(8, 8, 8, 8);      // DNS do Google
+
+  if (!WiFi.config(local_IP, gateway, subnet, primaryDNS)) {
+    Serial.println("Falha ao configurar IP Fixo");
+  }
+  // ==========================================
 
   WiFi.begin(ssid, password);
   while (WiFi.status() != WL_CONNECTED) {
@@ -179,5 +185,5 @@ if(psramFound()){
 void loop() {
   delay(10000);
 
-  digitalWrite(FLASH_GPIO_NUM, HIGH); // liga o flash
+  // digitalWrite(FLASH_GPIO_NUM, HIGH);
 }

@@ -250,12 +250,8 @@ def registrar_acesso_db(nome, confianca, frame_capturado, tempo_ms):
     print(f"[AUDITORIA] Acesso salvo | Confiança: {confianca}% | Temp: {temp_c}ºC")
     conn.close()
     return user_id
-
 # ==============================================================================
-# VÍDEO STREAM (ANTI-CONGELAMENTO COM URLLIB)
-# ==============================================================================
-# ==============================================================================
-# VÍDEO STREAM (REQUESTS COM TIMEOUT DUPLO ANTI-CONGELAMENTO)
+# VÍDEO STREAM (O MELHOR DO ANTIGO + PROTEÇÕES DO NOVO)
 # ==============================================================================
 class VideoStream:
     def __init__(self, src):
@@ -278,18 +274,20 @@ class VideoStream:
         while self.rodando:
             try:
                 if self.stream is None:
-                    # TIMEOUT DUPLO: (Tempo para Conectar, Tempo Máximo sem receber dados)
-                    # Se a ESP32 gaguejar por 3 segundos, o Requests desiste e reinicia!
-                    self.stream = requests.get(self.src, stream=True, timeout=(3.0, 3.0))
+                    # Timeout clássico de 5 segundos do seu código antigo
+                    self.stream = requests.get(self.src, stream=True, timeout=5)
 
-                for chunk in self.stream.iter_content(chunk_size=1024):
+                # Voltamos para 4096 bytes (O Labrador lê mais rápido em blocos maiores)
+                for chunk in self.stream.iter_content(chunk_size=4096):
                     if not self.rodando:
+                        if self.stream:
+                            self.stream.close()
                         break
                     
                     self.bytes_buffer += chunk
                     
-                    # Corta o lag brutalmente se acumular bytes demais
-                    if len(self.bytes_buffer) > 51200:
+                    # PROTEÇÃO CORRIGIDA: Agora permite fotos de até 300 KB (seguro para VGA/SVGA)
+                    if len(self.bytes_buffer) > 307200:
                         self.bytes_buffer = bytes()
                         continue
 
@@ -297,6 +295,7 @@ class VideoStream:
                     b = self.bytes_buffer.find(b"\xff\xd9")
                     
                     if a != -1 and b != -1:
+                        # Proteção essencial do código novo mantida (Evita crash do OpenCV)
                         if a < b:
                             jpg = self.bytes_buffer[a : b + 2]
                             self.bytes_buffer = self.bytes_buffer[b + 2 :]
@@ -308,15 +307,13 @@ class VideoStream:
                         else:
                             self.bytes_buffer = self.bytes_buffer[a:]
                             
-            except requests.exceptions.Timeout:
-                print("[REDE] A ESP32 engasgou (Timeout). Reiniciando vídeo na marra...")
-                self.stream = None
-                self.bytes_buffer = bytes()
             except Exception as e:
-                print(f"[REDE] Queda de conexão. Tentando novamente... Erro: {e}")
+                # Comportamento original do seu código: Caiu? Espera 2 segundos e tenta de novo.
+                if self.stream:
+                    self.stream.close()
                 self.stream = None
                 self.bytes_buffer = bytes()
-                time.sleep(1.0)
+                time.sleep(2)
 
     def read(self):
         with self.lock:
@@ -326,8 +323,6 @@ class VideoStream:
 
     def stop(self):
         self.rodando = False
-        if self.stream:
-            self.stream.close()
 # ==============================================================================
 # GESTÃO DA BIOMETRIA (PICKLE + FERNET)
 # ==============================================================================
