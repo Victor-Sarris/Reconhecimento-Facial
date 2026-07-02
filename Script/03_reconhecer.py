@@ -256,9 +256,8 @@ def registrar_acesso_db(nome, confianca, frame_capturado, tempo_ms):
 class VideoStream:
     def __init__(self, src):
         self.src = src
-        self.stream = cv2.VideoCapture(self.src)
-        # Força o OpenCV a manter o menor buffer possível para não acumular lag
-        self.stream.set(cv2.CAP_PROP_BUFFERSIZE, 1) 
+        self.stream = None
+        self.bytes_buffer = bytes()
         self.ultimo_frame = None
         self.rodando = False
         self.lock = threading.Lock()
@@ -271,28 +270,46 @@ class VideoStream:
         return self
 
     def update(self):
+        import requests # Importação local para garantir que funciona na Thread
         while self.rodando:
             try:
-                if not self.stream.isOpened():
-                    time.sleep(2)
-                    self.stream.open(self.src)
-                    continue
+                if self.stream is None:
+                    # Abre o túnel de vídeo com a ESP32
+                    self.stream = requests.get(self.src, stream=True, timeout=5)
 
-                # O grab() apenas puxa o frame da rede, mas NÃO processa (Super rápido)
-                ret = self.stream.grab()
-                
-                if ret:
-                    # O retrieve() transforma os bytes em imagem apenas na última foto puxada
-                    ret, frame = self.stream.retrieve()
-                    if ret:
-                        with self.lock:
-                            self.ultimo_frame = frame
-                else:
-                    time.sleep(0.01)
+                for chunk in self.stream.iter_content(chunk_size=4096):
+                    if not self.rodando:
+                        break
                     
+                    self.bytes_buffer += chunk
+                    
+                    # PROTEÇÃO 1: Evita o Lag. Se o buffer encher muito, joga fora e pega o tempo real
+                    if len(self.bytes_buffer) > 102400:
+                        self.bytes_buffer = bytes()
+                        continue
+
+                    a = self.bytes_buffer.find(b"\xff\xd8") # Assinatura de Início do JPEG
+                    b = self.bytes_buffer.find(b"\xff\xd9") # Assinatura de Fim do JPEG
+                    
+                    if a != -1 and b != -1:
+                        # PROTEÇÃO 2: Garante que a foto não está invertida/corrompida
+                        if a < b:
+                            jpg = self.bytes_buffer[a : b + 2]
+                            self.bytes_buffer = self.bytes_buffer[b + 2 :]
+                            img = cv2.imdecode(np.frombuffer(jpg, dtype=np.uint8), cv2.IMREAD_COLOR)
+                            
+                            if img is not None:
+                                with self.lock:
+                                    self.ultimo_frame = img
+                        else:
+                            # Se os bytes se atropelarem, descarta o erro e tenta a próxima foto
+                            self.bytes_buffer = self.bytes_buffer[a:]
+                            
             except Exception as e:
-                self.stream.release()
-                time.sleep(1)
+                # Se a rede cair, limpa tudo e tenta reconectar silenciosamente após 2 segundos
+                self.stream = None
+                self.bytes_buffer = bytes()
+                time.sleep(2)
 
     def read(self):
         with self.lock:
@@ -303,7 +320,7 @@ class VideoStream:
     def stop(self):
         self.rodando = False
         if self.stream:
-            self.stream.release()
+            self.stream.close()
 # ==============================================================================
 # GESTÃO DA BIOMETRIA (PICKLE + FERNET)
 # ==============================================================================
