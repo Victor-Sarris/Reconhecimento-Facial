@@ -273,10 +273,11 @@ class VideoStream:
         while self.rodando:
             try:
                 if self.stream is None:
-                    # Timeout clássico de 5 segundos do seu código antigo
-                    self.stream = requests.get(self.src, stream=True, timeout=5)
+                    print(f"\n[REDE] Tentando conectar na câmera: {self.src}...")
+                    # Timeout de 10s para a conexão inicial não ser abortada precipitadamente
+                    self.stream = requests.get(self.src, stream=True, timeout=10)
+                    print("[REDE] Conexão bem-sucedida! Recebendo vídeo...")
 
-                # Voltamos para 4096 bytes (O Labrador lê mais rápido em blocos maiores)
                 for chunk in self.stream.iter_content(chunk_size=4096):
                     if not self.rodando:
                         if self.stream:
@@ -285,8 +286,8 @@ class VideoStream:
                     
                     self.bytes_buffer += chunk
                     
-                    # PROTEÇÃO CORRIGIDA: Agora permite fotos de até 300 KB (seguro para VGA/SVGA)
                     if len(self.bytes_buffer) > 307200:
+                        print("[AVISO] Buffer estourou. Limpando lixo da rede...")
                         self.bytes_buffer = bytes()
                         continue
 
@@ -294,7 +295,6 @@ class VideoStream:
                     b = self.bytes_buffer.find(b"\xff\xd9")
                     
                     if a != -1 and b != -1:
-                        # Proteção essencial do código novo mantida (Evita crash do OpenCV)
                         if a < b:
                             jpg = self.bytes_buffer[a : b + 2]
                             self.bytes_buffer = self.bytes_buffer[b + 2 :]
@@ -303,16 +303,26 @@ class VideoStream:
                             if img is not None:
                                 with self.lock:
                                     self.ultimo_frame = img
+                            else:
+                                print("[AVISO] Imagem corrompida descartada.")
                         else:
                             self.bytes_buffer = self.bytes_buffer[a:]
                             
-            except Exception as e:
-                # Comportamento original do seu código: Caiu? Espera 2 segundos e tenta de novo.
+            except requests.exceptions.RequestException as e:
+                # Agora o terminal vai exibir exatamente porque a câmera não aparece!
+                print(f"[ERRO DE REDE] O Labrador não consegue falar com a ESP32! Erro: {e}")
                 if self.stream:
                     self.stream.close()
                 self.stream = None
                 self.bytes_buffer = bytes()
-                time.sleep(2)
+                time.sleep(3)
+            except Exception as e:
+                print(f"[ERRO DESCONHECIDO] {e}")
+                if self.stream:
+                    self.stream.close()
+                self.stream = None
+                self.bytes_buffer = bytes()
+                time.sleep(3)
 
     def read(self):
         with self.lock:
