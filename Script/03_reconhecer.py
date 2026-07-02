@@ -420,18 +420,19 @@ def processar_ia_async(frame_ia, frame_cru_ia):
 # UI E CLIQUES
 # ==============================================================================
 def desenhar_interface(frame):
-    overlay = frame.copy()
-    cv2.rectangle(overlay, (0, ALTURA_TELA - 100), (LARGURA_TELA, ALTURA_TELA), (30, 30, 30), -1) 
-    cv2.rectangle(overlay, (50, ALTURA_TELA - 80), (300, ALTURA_TELA - 20), (100, 0, 0), -1)    
-    cv2.rectangle(overlay, (350, ALTURA_TELA - 80), (600, ALTURA_TELA - 20), (100, 0, 0), -1)   
+    # Fundo sólido cinza escuro para a barra inferior (MUITO mais leve que addWeighted)
+    cv2.rectangle(frame, (0, ALTURA_TELA - 100), (LARGURA_TELA, ALTURA_TELA), (30, 30, 30), -1) 
     
-    cv2.addWeighted(overlay, 0.6, frame, 0.4, 0, frame)
-
+    # Botão 1
+    cv2.rectangle(frame, (50, ALTURA_TELA - 80), (300, ALTURA_TELA - 20), (100, 0, 0), -1)    
     cv2.rectangle(frame, (50, ALTURA_TELA - 80), (300, ALTURA_TELA - 20), COR_TEXTO, 1)
     cv2.putText(frame, "Capturar Rosto", (90, ALTURA_TELA - 40), cv2.FONT_HERSHEY_SIMPLEX, 0.8, COR_TEXTO, 2)
+    
+    # Botão 2
+    cv2.rectangle(frame, (350, ALTURA_TELA - 80), (600, ALTURA_TELA - 20), (100, 0, 0), -1)   
     cv2.rectangle(frame, (350, ALTURA_TELA - 80), (600, ALTURA_TELA - 20), COR_TEXTO, 1)
     cv2.putText(frame, "Modo Servidor", (390, ALTURA_TELA - 40), cv2.FONT_HERSHEY_SIMPLEX, 0.8, COR_TEXTO, 2)
-
+    
 def gerenciar_cliques(event, x, y, flags, param):
     global estado_atual, nome_novo_cadastro, buffer_fotos_novas
     if event == cv2.EVENT_LBUTTONDOWN:
@@ -518,9 +519,7 @@ def loop_principal():
                 cv2.putText(frame, f"Aguarde {tempo_restante}s...", (LARGURA_TELA - 250, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.9, COR_TEXTO, 2)
 
         elif estado_atual == MODO_CAPTURANDO:
-            overlay = frame.copy()
-            cv2.rectangle(overlay, (0, 0), (LARGURA_TELA, 170), (0, 0, 0), -1)
-            cv2.addWeighted(overlay, 0.7, frame, 0.3, 0, frame)
+            cv2.rectangle(frame, (0, 0), (LARGURA_TELA, 170), (30, 30, 30), -1)
             
             cv2.putText(frame, f"NOME: {nome_novo_cadastro}_", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.2, COR_TEXTO, 2)
             cv2.putText(frame, f"[+] TIRAR FOTO ({len(buffer_fotos_novas)})  |  [ENTER] SALVAR  |  [ESC] VOLTAR", (50, 95), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 2)
@@ -535,9 +534,7 @@ def loop_principal():
             cv2.putText(frame, inst, (50, 140), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
 
         elif estado_atual == MODO_INFO_REMOTO:
-            overlay = frame.copy()
-            cv2.rectangle(overlay, (150, 150), (LARGURA_TELA - 150, ALTURA_TELA - 100), (10, 10, 10), -1)
-            cv2.addWeighted(overlay, 0.85, frame, 0.15, 0, frame)
+            cv2.rectangle(frame, (150, 150), (LARGURA_TELA - 150, ALTURA_TELA - 100), (15, 15, 15), -1)
             
             cv2.rectangle(frame, (150, 150), (LARGURA_TELA - 150, ALTURA_TELA - 100), COR_RECONHECIDO, 2)
             cv2.putText(frame, "MODO SERVIDOR", (320, 220), cv2.FONT_HERSHEY_SIMPLEX, 1.5, COR_RECONHECIDO, 2)
@@ -550,7 +547,7 @@ def loop_principal():
         with lock:
             frame_atual = frame.copy()
 
-        key = cv2.waitKey(1) & 0xFF
+        key = cv2.waitKey(33) & 0xFF
         if estado_atual == MODO_CAPTURANDO:
             if key == 13: # ENTER
                 if buffer_fotos_novas and nome_novo_cadastro:

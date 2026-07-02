@@ -146,12 +146,12 @@ void setup() {
   config.pixel_format = PIXFORMAT_JPEG;
   
   if(psramFound()){
-    config.frame_size = FRAMESIZE_VGA;
-    config.jpeg_quality = 10;
+    config.frame_size = FRAMESIZE_HVGA;
+    config.jpeg_quality = 15;
     config.fb_count = 2;
   } else {
-    config.frame_size = FRAMESIZE_SVGA;
-    config.jpeg_quality = 12;
+    config.frame_size = FRAMESIZE_CIF;
+    config.jpeg_quality = 20;
     config.fb_count = 1;
   }
   
@@ -177,5 +177,5 @@ void setup() {
 void loop() {
   delay(10000);
 
-  digitalWrite(FLASH_GPIO_NUM, HIGH); // liga o flash
+  digitalWrite(FLASH_GPIO_NUM, LOW); // liga o flash
 }
