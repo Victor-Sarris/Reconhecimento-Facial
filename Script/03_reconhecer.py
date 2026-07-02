@@ -252,13 +252,11 @@ def registrar_acesso_db(nome, confianca, frame_capturado, tempo_ms):
     return user_id
 
 # ==============================================================================
-# VÍDEO STREAM (ROBUSTO CONTRA QUEDAS - REQUESTS)
+# VÍDEO STREAM (ANTI-CONGELAMENTO COM URLLIB)
 # ==============================================================================
 class VideoStream:
     def __init__(self, src):
         self.src = src
-        self.stream = None
-        self.bytes_buffer = bytes()
         self.ultimo_frame = None
         self.rodando = False
         self.lock = threading.Lock()
@@ -271,44 +269,44 @@ class VideoStream:
         return self
 
     def update(self):
-
+        import urllib.request
         while self.rodando:
             try:
-                if self.stream is None:
-                    # Timeout agressivo: Se o ESP32 gaguejar por 2 segundos, o Python corta e reconecta
-                    self.stream = requests.get(self.src, stream=True, timeout=(2.0, 2.0))
-
-                # Reduzimos o chunk_size para 1024. Isso faz a leitura ser mais contínua e imune a lag de pacotes.
-                for chunk in self.stream.iter_content(chunk_size=1024):
-                    if not self.rodando:
-                        break
+                # O timeout de 2 segundos aqui atua direto no socket da placa de rede
+                req = urllib.request.urlopen(self.src, timeout=2.0)
+                bytes_buffer = bytes()
+                
+                while self.rodando:
+                    # Lê 1024 bytes por vez. Se a rede travar, o socket estoura o timeout e reinicia.
+                    chunk = req.read(1024)
+                    if not chunk:
+                        break # O ESP32 fechou a conexão
+                        
+                    bytes_buffer += chunk
                     
-                    self.bytes_buffer += chunk
-                    
-                    # Corta o lag brutalmente: Se a rede atrasar e juntar mais de 50KB, joga tudo no lixo
-                    if len(self.bytes_buffer) > 51200:
-                        self.bytes_buffer = bytes()
+                    if len(bytes_buffer) > 51200:
+                        bytes_buffer = bytes()
                         continue
 
-                    a = self.bytes_buffer.find(b"\xff\xd8")
-                    b = self.bytes_buffer.find(b"\xff\xd9")
+                    a = bytes_buffer.find(b"\xff\xd8")
+                    b = bytes_buffer.find(b"\xff\xd9")
                     
                     if a != -1 and b != -1:
                         if a < b:
-                            jpg = self.bytes_buffer[a : b + 2]
-                            self.bytes_buffer = self.bytes_buffer[b + 2 :]
+                            jpg = bytes_buffer[a : b + 2]
+                            bytes_buffer = bytes_buffer[b + 2 :]
                             img = cv2.imdecode(np.frombuffer(jpg, dtype=np.uint8), cv2.IMREAD_COLOR)
                             
                             if img is not None:
                                 with self.lock:
                                     self.ultimo_frame = img
                         else:
-                            self.bytes_buffer = self.bytes_buffer[a:]
+                            bytes_buffer = bytes_buffer[a:]
                             
             except Exception as e:
-                self.stream = None
-                self.bytes_buffer = bytes()
-                time.sleep(0.5) # Reconecta muito mais rápido (meio segundo)
+                # Se der calafrio na rede e travar, ele cai aqui, limpa tudo e reconecta em 0.5s
+                bytes_buffer = bytes()
+                time.sleep(0.5)
 
     def read(self):
         with self.lock:
@@ -318,8 +316,6 @@ class VideoStream:
 
     def stop(self):
         self.rodando = False
-        if self.stream:
-            self.stream.close()
 # ==============================================================================
 # GESTÃO DA BIOMETRIA (PICKLE + FERNET)
 # ==============================================================================
