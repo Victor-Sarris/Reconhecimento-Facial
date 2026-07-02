@@ -6,6 +6,7 @@ import threading
 import time
 import os
 import sqlite3
+import requests 
 import math
 import sys
 import socket
@@ -270,29 +271,29 @@ class VideoStream:
         return self
 
     def update(self):
-        import requests # Importação local para garantir que funciona na Thread
+
         while self.rodando:
             try:
                 if self.stream is None:
-                    # Abre o túnel de vídeo com a ESP32
-                    self.stream = requests.get(self.src, stream=True, timeout=5)
+                    # Timeout agressivo: Se o ESP32 gaguejar por 2 segundos, o Python corta e reconecta
+                    self.stream = requests.get(self.src, stream=True, timeout=(2.0, 2.0))
 
-                for chunk in self.stream.iter_content(chunk_size=4096):
+                # Reduzimos o chunk_size para 1024. Isso faz a leitura ser mais contínua e imune a lag de pacotes.
+                for chunk in self.stream.iter_content(chunk_size=1024):
                     if not self.rodando:
                         break
                     
                     self.bytes_buffer += chunk
                     
-                    # PROTEÇÃO 1: Evita o Lag. Se o buffer encher muito, joga fora e pega o tempo real
-                    if len(self.bytes_buffer) > 102400:
+                    # Corta o lag brutalmente: Se a rede atrasar e juntar mais de 50KB, joga tudo no lixo
+                    if len(self.bytes_buffer) > 51200:
                         self.bytes_buffer = bytes()
                         continue
 
-                    a = self.bytes_buffer.find(b"\xff\xd8") # Assinatura de Início do JPEG
-                    b = self.bytes_buffer.find(b"\xff\xd9") # Assinatura de Fim do JPEG
+                    a = self.bytes_buffer.find(b"\xff\xd8")
+                    b = self.bytes_buffer.find(b"\xff\xd9")
                     
                     if a != -1 and b != -1:
-                        # PROTEÇÃO 2: Garante que a foto não está invertida/corrompida
                         if a < b:
                             jpg = self.bytes_buffer[a : b + 2]
                             self.bytes_buffer = self.bytes_buffer[b + 2 :]
@@ -302,14 +303,12 @@ class VideoStream:
                                 with self.lock:
                                     self.ultimo_frame = img
                         else:
-                            # Se os bytes se atropelarem, descarta o erro e tenta a próxima foto
                             self.bytes_buffer = self.bytes_buffer[a:]
                             
             except Exception as e:
-                # Se a rede cair, limpa tudo e tenta reconectar silenciosamente após 2 segundos
                 self.stream = None
                 self.bytes_buffer = bytes()
-                time.sleep(2)
+                time.sleep(0.5) # Reconecta muito mais rápido (meio segundo)
 
     def read(self):
         with self.lock:

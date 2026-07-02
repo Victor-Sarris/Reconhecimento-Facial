@@ -146,13 +146,14 @@ void setup() {
   config.xclk_freq_hz = 20000000;
   config.pixel_format = PIXFORMAT_JPEG;
   
-  if(psramFound()){
-    config.frame_size = FRAMESIZE_HVGA;
-    config.jpeg_quality = 15;
+if(psramFound()){
+    // Resolução QVGA (320x240): Pacotes ultra-leves, perfeitos para a IA e Wi-Fi fraco
+    config.frame_size = FRAMESIZE_QVGA; 
+    config.jpeg_quality = 12; // Compressão média/alta
     config.fb_count = 2;
   } else {
-    config.frame_size = FRAMESIZE_CIF;
-    config.jpeg_quality = 20;
+    config.frame_size = FRAMESIZE_QVGA;
+    config.jpeg_quality = 15; // Compressão ainda maior se faltar RAM
     config.fb_count = 1;
   }
   
