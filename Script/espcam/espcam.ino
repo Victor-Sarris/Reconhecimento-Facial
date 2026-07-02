@@ -10,8 +10,8 @@
 // ==========================================
 // 1. Configurações de Rede
 // ==========================================
-const char* ssid = "2.4";
-const char* password = "evabarros2025";
+const char* ssid = "VIRTEX_A";
+const char* password = "lamar338";
 
 #define PART_BOUNDARY "123456789000000000000987654321"
 
