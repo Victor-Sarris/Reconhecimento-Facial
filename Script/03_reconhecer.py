@@ -4,7 +4,6 @@ import pickle
 import numpy as np
 import threading
 import time
-import requests
 import os
 import sqlite3
 import math
@@ -257,8 +256,9 @@ def registrar_acesso_db(nome, confianca, frame_capturado, tempo_ms):
 class VideoStream:
     def __init__(self, src):
         self.src = src
-        self.stream = None
-        self.bytes_buffer = bytes()
+        self.stream = cv2.VideoCapture(self.src)
+        # Força o OpenCV a manter o menor buffer possível para não acumular lag
+        self.stream.set(cv2.CAP_PROP_BUFFERSIZE, 1) 
         self.ultimo_frame = None
         self.rodando = False
         self.lock = threading.Lock()
@@ -273,42 +273,26 @@ class VideoStream:
     def update(self):
         while self.rodando:
             try:
-                if self.stream is None:
-                    self.stream = requests.get(self.src, stream=True, timeout=5)
+                if not self.stream.isOpened():
+                    time.sleep(2)
+                    self.stream.open(self.src)
+                    continue
 
-                for chunk in self.stream.iter_content(chunk_size=4096):
-                    if not self.rodando:
-                        break
+                # O grab() apenas puxa o frame da rede, mas NÃO processa (Super rápido)
+                ret = self.stream.grab()
+                
+                if ret:
+                    # O retrieve() transforma os bytes em imagem apenas na última foto puxada
+                    ret, frame = self.stream.retrieve()
+                    if ret:
+                        with self.lock:
+                            self.ultimo_frame = frame
+                else:
+                    time.sleep(0.01)
                     
-                    self.bytes_buffer += chunk
-                    
-                    # PROTEÇÃO 1: Esvazia a represa de dados se acumular muito Lag (> 100 KB)
-                    if len(self.bytes_buffer) > 102400:
-                        self.bytes_buffer = bytes()
-                        continue
-
-                    a = self.bytes_buffer.find(b"\xff\xd8") # Início
-                    b = self.bytes_buffer.find(b"\xff\xd9") # Fim
-                    
-                    if a != -1 and b != -1:
-                        # PROTEÇÃO 2: Garante que o Início vem ANTES do Fim
-                        if a < b:
-                            jpg = self.bytes_buffer[a : b + 2]
-                            self.bytes_buffer = self.bytes_buffer[b + 2 :]
-                            img = cv2.imdecode(np.frombuffer(jpg, dtype=np.uint8), cv2.IMREAD_COLOR)
-                            
-                            if img is not None:
-                                with self.lock:
-                                    self.ultimo_frame = img
-                        else:
-                            # Buffer "atropelado" (Fim antes do Início).
-                            # Descarta o lixo e recomeça a ler do novo Início exato.
-                            self.bytes_buffer = self.bytes_buffer[a:]
-                            
             except Exception as e:
-                self.stream = None
-                self.bytes_buffer = bytes()
-                time.sleep(2)
+                self.stream.release()
+                time.sleep(1)
 
     def read(self):
         with self.lock:
@@ -318,7 +302,8 @@ class VideoStream:
 
     def stop(self):
         self.rodando = False
-
+        if self.stream:
+            self.stream.release()
 # ==============================================================================
 # GESTÃO DA BIOMETRIA (PICKLE + FERNET)
 # ==============================================================================

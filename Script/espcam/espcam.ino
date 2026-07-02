@@ -95,6 +95,7 @@ static esp_err_t stream_handler(httpd_req_t *req){
     if(res != ESP_OK){
       break;
     }
+    delay(50);
   }
   return res;
 }
@@ -177,5 +178,5 @@ void setup() {
 void loop() {
   delay(10000);
 
-  digitalWrite(FLASH_GPIO_NUM, LOW); // liga o flash
+  digitalWrite(FLASH_GPIO_NUM, HIGH); // liga o flash
 }
