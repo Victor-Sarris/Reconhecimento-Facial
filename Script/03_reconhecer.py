@@ -270,7 +270,6 @@ class VideoStream:
         return self
 
     def update(self):
-        import requests
         while self.rodando:
             try:
                 if self.stream is None:
@@ -489,7 +488,10 @@ def loop_principal():
     while True:
         frame_cru = stream.read()
         if frame_cru is None:
-            time.sleep(0.01)
+            frame_vazio = np.zeros((ALTURA_TELA, LARGURA_TELA, 3), dtype=np.uint8)
+            cv2.putText(frame_vazio, "CONECTANDO A ESP32-CAM...", (LARGURA_TELA//2 - 250, ALTURA_TELA//2), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 2)
+            cv2.imshow("Totem", frame_vazio)
+            cv2.waitKey(33)
             continue
 
         frame = cv2.resize(frame_cru, (LARGURA_TELA, ALTURA_TELA))
