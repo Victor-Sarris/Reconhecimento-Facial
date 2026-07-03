@@ -59,7 +59,7 @@ fernet_cipher = Fernet(CHAVE_SESSAO.encode())
 # ==============================================================================
 ARQUIVO_DADOS = "encodings.pickle"
 BANCO_DADOS = "totem_banco.db"
-URL_CAMERA =  "http://192.168.18.159/stream" # Coloque o IP do Droidcam ou da Câmera IP
+URL_CAMERA =  "http://192.168.1.37/stream" # Coloque o IP do Droidcam ou da Câmera IP
 INTERVALO_SCAN_IA = 4.0
 DELAY_RECONHECIMENTO = 5.0
 

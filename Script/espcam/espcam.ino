@@ -159,14 +159,14 @@ void setup() {
   }
 
   // configuracao de ip fixo
-  IPAddress local_IP(192, 168, 18, 159); // O IP fixo para a ESP32
-  IPAddress gateway(192, 168, 18, 1);    // O IP roteador Wi-Fi
-  IPAddress subnet(255, 255, 255, 0);    // Máscara de rede padrão
-  IPAddress primaryDNS(8, 8, 8, 8);      // DNS do Google
+  // IPAddress local_IP(192, 168, 18, 159); // O IP fixo para a ESP32
+  // IPAddress gateway(192, 168, 18, 1);    // O IP roteador Wi-Fi
+  // IPAddress subnet(255, 255, 255, 0);    // Máscara de rede padrão
+  // IPAddress primaryDNS(8, 8, 8, 8);      // DNS do Google
 
-  if (!WiFi.config(local_IP, gateway, subnet, primaryDNS)) {
-    Serial.println("Falha ao configurar IP Fixo");
-  }
+  // if (!WiFi.config(local_IP, gateway, subnet, primaryDNS)) {
+  //   Serial.println("Falha ao configurar IP Fixo");
+  // }
   // ==========================================
 
   WiFi.begin(ssid, password);
