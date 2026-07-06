@@ -1,0 +1,75 @@
+% ========================================================================
+% ELEMENTOS PRÉ-TEXTUAIS
+% Capa e folha de rosto conforme artigo TCC IFPI
+% ========================================================================
+
+% ========================================================================
+% CAPA (Obrigatória em artigos do IFPI segundo o manual TCC)
+% ========================================================================
+\imprimircapa
+
+% ========================================================================
+% FOLHA DE ROSTO (Obrigatória)
+% ========================================================================
+\imprimirfolhaderosto*
+
+% ========================================================================
+% AGRADECIMENTOS (OPCIONAL - EM ARTIGOS DEVE IR NO FINAL)
+% ========================================================================
+% O manual do IFPI diz que agradecimentos em artigos vão como elemento pós-textual,
+% portanto mude-os para o final do `main.tex` se for usar.
+
+% ========================================================================
+% CABEÇALHO DO ARTIGO (Título, autores, e-mails)
+% ========================================================================
+\imprimircabecalhoartigo
+
+% ========================================================================
+% RESUMO EM PORTUGUÊS E PALAVRAS-CHAVE
+% ========================================================================
+\setlength{\absparsep}{18pt} % Ajusta espaçamento entre parágrafos do resumo
+
+\begin{resumo}
+    O credenciamento manual de pacientes em instituições de saúde gera filas desgastantes, consome tempo excessivo e expõe o ambiente a vulnerabilidades de segurança e higiene. Para superar essas limitações operacionais, este artigo científico tem como objetivo desenvolver um artefato tecnológico de reconhecimento facial baseado em arquitetura de \textit{Edge Computing} para automatizar o processo de credenciamento de pacientes, reduzindo o tempo de espera e mitigando falhas operacionais. A metodologia utilizada baseia-se na \textit{Design Science Research }(DSR), com abordagem quantitativa e pesquisa experimental de campo. O sistema foi construído integrando um \textit{Single Board Computer} (SBC Labrador) a um módulo ESP32-CAM e sensores de distância (VL53L0X), operando de forma totalmente \textit{offline} e sem contato. O \textit{pipeline} de visão computacional utiliza as bibliotecas \textit{OpenCV} e \textit{Dlib} em conjunto com Redes Neurais Profundas para a extração de assinaturas faciais matemáticas (\textit{embeddings}). A fase de avaliação cruzou a \textit{baseline} empírica do processo manual nas clínicas — que registrou picos de espera de até 7 minutos e 51 segundos por paciente — com o desempenho em ambiente controlado do protótipo. Os resultados demonstram que o artefato conclui o ciclo de inferência e validação da identidade em aproximadamente 1,3 segundos. Conclui-se que a solução proposta atende com êxito ao objetivo traçado, convertendo um procedimento presencial demorado em uma validação instantânea, eliminando estruturalmente as filas de espera e reduzindo o erro humano no ambiente clínico.
+    
+    \vspace{\onelineskip}
+    \noindent
+    \textbf{Palavras-chave}: Reconhecimento Facial; Computação de Borda; Design Science Research; Visão Computacional; Controle de Acesso.
+\end{resumo}
+
+% ========================================================================
+% RESUMO EM INGLÊS (ABSTRACT) E KEYWORDS
+% ========================================================================
+\begin{resumo}[ABSTRACT]
+    \begin{otherlanguage*}{english}
+        Manual patient credentialing in healthcare institutions generates exhausting queues, consumes excessive time, and exposes the environment to security and hygiene vulnerabilities. To overcome these operational limitations, this scientific article aims to develop a facial recognition technological artifact based on Edge Computing architecture to automate the patient credentialing process, reducing wait times and mitigating operational failures. The methodology used is based on Design Science Research (DSR), with a quantitative approach and experimental field research. The system was built by integrating a Single Board Computer (SBC Labrador) with an ESP32-CAM module and distance sensors (VL53L0X), operating entirely offline and contactless. The computer vision pipeline utilizes the OpenCV and Dlib libraries in conjunction with Deep Neural Networks for extracting mathematical facial signatures (embeddings). The evaluation phase cross-referenced the empirical baseline of the manual process in clinics — which recorded wait peaks of up to 7 minutes and 51 seconds per patient — with the prototype's performance in a controlled environment. The results demonstrate that the artifact completes the inference and identity validation cycle in approximately 1.3 seconds. It is concluded that the proposed solution successfully meets the outlined objective, converting a time-consuming in-person procedure into an instantaneous validation, structurally eliminating wait queues and reducing human error in the clinical environment.  
+        
+        \vspace{\onelineskip}
+        \noindent
+        \textbf{Keywords}: Facial Recognition; Edge Computing; Design Science Research; Computer Vision; Access Control.
+    \end{otherlanguage*}
+\end{resumo}
+
+% ========================================================================
+% DATA DE APROVAÇÃO
+% ========================================================================
+\vspace{\onelineskip}
+\noindent
+Data de aprovação: \imprimirdataaprovacao
+
+\vspace{1cm}
+
+% ========================================================================
+% CONFIGURAÇÕES PARA INÍCIO DO TEXTO
+% ========================================================================
+% Impede quebra de página padrão do abntex2 após pré-textuais
+\makeatletter
+\renewcommand{\textual}{%
+  \pagestyle{ifpihead}
+  \aliaspagestyle{chapter}{ifpihead}
+  \nouppercaseheads
+  \bookmarksetup{startatroot}
+}
+\makeatother
+
+\textual
