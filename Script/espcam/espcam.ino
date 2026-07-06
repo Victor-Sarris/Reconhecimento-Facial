@@ -8,8 +8,8 @@
 #include "esp_http_server.h" 
 
 // 1. configuracoes de Rede
-const char* ssid = "VIRTEX_A";
-const char* password = "lamar338";
+const char* ssid = "HOME-LABRADOR";
+const char* password = "clebin1234";
 
 #define PART_BOUNDARY "123456789000000000000987654321"
 
@@ -159,14 +159,14 @@ void setup() {
   }
 
   // configuracao de ip fixo
-  // IPAddress local_IP(192, 168, 18, 159); // O IP fixo para a ESP32
-  // IPAddress gateway(192, 168, 18, 1);    // O IP roteador Wi-Fi
-  // IPAddress subnet(255, 255, 255, 0);    // Máscara de rede padrão
-  // IPAddress primaryDNS(8, 8, 8, 8);      // DNS do Google
+  IPAddress local_IP(192, 168, 137, 159); // O IP fixo para a ESP32
+  IPAddress gateway(192, 168, 137, 1);    // O IP roteador Wi-Fi
+  IPAddress subnet(255, 255, 255, 0);    // Máscara de rede padrão
+  IPAddress primaryDNS(8, 8, 8, 8);      // DNS do Google
 
-  // if (!WiFi.config(local_IP, gateway, subnet, primaryDNS)) {
-  //   Serial.println("Falha ao configurar IP Fixo");
-  // }
+  if (!WiFi.config(local_IP, gateway, subnet, primaryDNS)) {
+    Serial.println("Falha ao configurar IP Fixo");
+  }
   // ==========================================
 
   WiFi.begin(ssid, password);
@@ -185,5 +185,5 @@ void setup() {
 void loop() {
   delay(10000);
 
-  // digitalWrite(FLASH_GPIO_NUM, HIGH);
+  digitalWrite(FLASH_GPIO_NUM, HIGH);
 }
