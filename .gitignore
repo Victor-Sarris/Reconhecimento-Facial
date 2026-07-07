@@ -13,3 +13,7 @@ __pycache__/
 embeddings.pkl
 encodings.pickle
 dataset/
+
+#arquivos de logs
+./logs_imagens
+logs_imagens
