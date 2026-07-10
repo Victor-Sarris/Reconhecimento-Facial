@@ -21,7 +21,7 @@ from flask import Flask, Response, jsonify, request
 ARQUIVO_DADOS = "encodings.pickle"
 BANCO_DADOS = "totem_banco.db"
 PASTA_LOGS = "logs_imagens"
-URL_CAMERA = "http://192.168.18.159/stream"
+URL_CAMERA = "http://192.168.137.159/stream"
 PASTA_DATASET = "dataset"
 INTERVALO_SCAN_IA = 1.0
 DELAY_RECONHECIMENTO = 5.0
